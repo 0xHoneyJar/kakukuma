@@ -1,0 +1,13 @@
+[package]
+name = "kakukuma"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal-native pixel art editor for mascot design using Unicode block elements"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+arboard = "3"
+dirs = "6"
