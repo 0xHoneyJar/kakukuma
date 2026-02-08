@@ -281,7 +281,7 @@ fn render_export_dialog(f: &mut Frame, app: &App, area: Rect) {
     let y = (area.height.saturating_sub(height)) / 2;
     let dialog_area = Rect::new(x, y, width, height);
 
-    let format_opts = ["Plain Text", "ANSI Color"];
+    let format_opts = ["Unicode", "ANSI Art"];
     let dest_opts = ["Clipboard", "File"];
 
     let mut lines: Vec<ratatui::text::Line> = Vec::new();

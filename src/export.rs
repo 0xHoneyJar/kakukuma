@@ -1,7 +1,7 @@
 use crate::canvas::{Canvas, CANVAS_HEIGHT, CANVAS_WIDTH};
 use crate::cell::BlockChar;
 
-/// Export canvas as plain text (block characters only, no color).
+/// Export canvas as plain Unicode (block characters only, no color).
 /// Each cell is doubled for square pixels.
 pub fn to_plain_text(canvas: &Canvas) -> String {
     let mut output = String::new();
@@ -39,7 +39,7 @@ pub fn to_plain_text(canvas: &Canvas) -> String {
     output
 }
 
-/// Export canvas as ANSI escape code text (colored).
+/// Export canvas as ANSI art (Unicode blocks with 256-color escape codes).
 /// Each cell is doubled for square pixels.
 /// Uses 256-color escape codes: \x1b[38;5;{fg}m and \x1b[48;5;{bg}m
 pub fn to_ansi(canvas: &Canvas) -> String {

@@ -1,6 +1,6 @@
 # Kakukuma ʕ•ᴥ•ʔ
 
-Terminal-native pixel art editor using Unicode block elements.
+Terminal-native ANSI art editor using Unicode block elements.
 
 ![Rust](https://img.shields.io/badge/Rust-2021-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -15,7 +15,7 @@ Terminal-native pixel art editor using Unicode block elements.
 - **Symmetry modes** — horizontal, vertical, or both for mirrored drawing
 - **Undo/redo** with full stroke-level history
 - **Project files** — save/load `.kaku` files with auto-save recovery
-- **Export** — plain text or ANSI escape codes, to clipboard or file
+- **Export** — ANSI art to clipboard or file, with optional plain Unicode export
 - **Grid overlay** toggle for precision work
 - **Mouse support** — click and drag to draw, right-click to eyedrop
 
@@ -95,8 +95,8 @@ cargo run -- myart.kaku
 |-----------|-------------|
 | `.kaku` | Project file (JSON, preserves all state) |
 | `.palette` | Custom color palette (JSON, shareable) |
-| `.txt` | Plain text export (Unicode blocks) |
-| `.ans` | ANSI escape code export (colored) |
+| `.txt` | Plain Unicode export (blocks without color) |
+| `.ans` | ANSI art export (256-color escape codes) |
 
 ## Architecture
 
@@ -112,7 +112,7 @@ src/
 ├── symmetry.rs    Mirror transformations
 ├── palette.rs     Hue groups, HSL conversion, custom palettes
 ├── project.rs     .kaku file save/load
-├── export.rs      Plain text and ANSI export
+├── export.rs      Plain Unicode and ANSI art export
 └── ui/
     ├── mod.rs       Layout, dialogs, header
     ├── editor.rs    Canvas rendering widget

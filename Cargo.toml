@@ -2,7 +2,7 @@
 name = "kakukuma"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal-native pixel art editor for mascot design using Unicode block elements"
+description = "Terminal-native ANSI art editor using Unicode block elements"
 license = "MIT"
 repository = "https://github.com/gumibera/kakukuma"
 
