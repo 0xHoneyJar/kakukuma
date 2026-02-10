@@ -127,3 +127,7 @@ Built with [ratatui](https://github.com/ratatui/ratatui) and [crossterm](https:/
 ## License
 
 [MIT](LICENSE.md)
+
+---
+
+Ridden with [Loa](https://github.com/0xHoneyJar/loa)
