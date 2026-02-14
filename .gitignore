@@ -38,8 +38,8 @@ CHANGELOG.md
 .gitleaksignore
 .trufflehog.yaml
 
-# Loa test suites
-tests/
+# Loa test suites (but allow Cargo integration tests)
+# tests/
 
 # Test art files
 *.kaku
