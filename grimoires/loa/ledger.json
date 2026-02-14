@@ -1,0 +1,38 @@
+{
+  "version": "1.0.0",
+  "cycles": [
+    {
+      "id": "cycle-001",
+      "label": "Agent Mode — Programmatic Drawing Interface",
+      "prd": "grimoires/loa/prd.md",
+      "sdd": "grimoires/loa/sdd.md",
+      "sprints": [
+        {
+          "id": "sprint-1",
+          "global_id": 1,
+          "label": "Foundation + Core Drawing (MVP)",
+          "status": "planned"
+        },
+        {
+          "id": "sprint-2",
+          "global_id": 2,
+          "label": "Inspection, Analysis & History",
+          "status": "planned"
+        },
+        {
+          "id": "sprint-3",
+          "global_id": 3,
+          "label": "Palette, Integration Tests & Polish",
+          "status": "planned"
+        }
+      ],
+      "created_at": "2026-02-14",
+      "archived_at": null,
+      "status": "active"
+    }
+  ],
+  "active_cycle": "cycle-001",
+  "active_bugfix": null,
+  "global_sprint_counter": 3,
+  "bugfix_cycles": []
+}
