@@ -85,7 +85,7 @@ pub fn find_autosave(dir: &std::path::Path) -> Option<String> {
     None
 }
 
-fn now_iso8601() -> String {
+pub(crate) fn now_iso8601() -> String {
     // Simple UTC timestamp without external crate
     use std::time::SystemTime;
     let duration = SystemTime::now()

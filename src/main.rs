@@ -1,9 +1,11 @@
 mod app;
 mod canvas;
 mod cell;
+mod cli;
 mod export;
 mod history;
 mod input;
+mod oplog;
 mod palette;
 mod project;
 mod symmetry;
@@ -23,9 +25,25 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use app::App;
+use clap::Parser;
 use input::CanvasArea;
 
 fn main() -> io::Result<()> {
+    let args = cli::Cli::parse();
+
+    match args.command {
+        Some(cmd) => {
+            // CLI path — no terminal initialization
+            cli::run(cmd)
+        }
+        None => {
+            // TUI path — existing behavior
+            run_tui(args.file)
+        }
+    }
+}
+
+fn run_tui(file: Option<String>) -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -41,7 +59,7 @@ fn main() -> io::Result<()> {
         original_hook(panic_info);
     }));
 
-    let result = run(&mut terminal);
+    let result = run(&mut terminal, file);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -55,7 +73,7 @@ fn main() -> io::Result<()> {
     result
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, file: Option<String>) -> io::Result<()> {
     let mut app = App::new();
     let mut canvas_area = CanvasArea {
         left: 0,
@@ -67,9 +85,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
     };
 
     // Load file from command-line argument if provided
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
-        app.load_project(&args[1]);
+    if let Some(ref path) = file {
+        app.load_project(path);
     }
 
     // Check for autosave recovery on startup (only if no file was loaded)
