@@ -48,13 +48,23 @@ impl Canvas {
         }
     }
 
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.cells = vec![vec![Cell::default(); self.width]; self.height];
     }
 
+    /// Clone the entire cell grid (for history snapshots).
+    pub fn cells(&self) -> Vec<Vec<Cell>> {
+        self.cells.clone()
+    }
+
+    /// Replace the entire cell grid and dimensions (for history snapshot restore).
+    pub fn replace(&mut self, cells: Vec<Vec<Cell>>, width: usize, height: usize) {
+        self.cells = cells;
+        self.width = width;
+        self.height = height;
+    }
+
     /// Resize the canvas, preserving existing content where it overlaps.
-    #[allow(dead_code)]
     pub fn resize(&mut self, new_width: usize, new_height: usize) {
         let w = new_width.clamp(MIN_DIMENSION, MAX_DIMENSION);
         let h = new_height.clamp(MIN_DIMENSION, MAX_DIMENSION);

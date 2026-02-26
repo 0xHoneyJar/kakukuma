@@ -26,6 +26,8 @@ pub enum AppMode {
     PaletteRename,
     PaletteExport,
     NewCanvas,
+    ResizeCanvas,
+    ResizeCropConfirm,
     HexColorInput,
     BlockPicker,
 }
@@ -97,10 +99,11 @@ pub struct App {
     pub palette_layout: Vec<PaletteItem>,
     // Theme index (0=Warm, 1=Neon, 2=Dark)
     pub theme_index: usize,
-    // New Canvas dialog state
+    // New Canvas / Resize dialog state
     pub new_canvas_width: usize,
     pub new_canvas_height: usize,
     pub new_canvas_cursor: u8, // 0=width, 1=height
+    pub new_canvas_input: String, // text buffer for active field
     // Keyboard canvas cursor
     pub canvas_cursor: (usize, usize),
     pub canvas_cursor_active: bool,
@@ -163,6 +166,7 @@ impl App {
             new_canvas_width: canvas::DEFAULT_WIDTH,
             new_canvas_height: canvas::DEFAULT_HEIGHT,
             new_canvas_cursor: 0,
+            new_canvas_input: String::new(),
             canvas_cursor: (0, 0),
             canvas_cursor_active: false,
             viewport_x: 0,

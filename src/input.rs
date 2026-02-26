@@ -2,7 +2,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, Mous
 
 use crate::app::{App, AppMode};
 use crate::canvas::Canvas;
-use crate::history::History;
+use crate::history::{Action, History};
 use crate::palette::{PaletteItem, PaletteSection};
 use crate::tools::{ToolKind, ToolState};
 
@@ -135,6 +135,18 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
             }
             return;
         }
+        AppMode::ResizeCanvas => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_resize_canvas(app, code);
+            }
+            return;
+        }
+        AppMode::ResizeCropConfirm => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_resize_crop_confirm(app, code);
+            }
+            return;
+        }
         AppMode::HexColorInput => {
             if let Event::Key(key) = event {
                 handle_hex_input(app, key);
@@ -192,7 +204,17 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.new_canvas_width = app.canvas.width;
                 app.new_canvas_height = app.canvas.height;
                 app.new_canvas_cursor = 0;
+                app.new_canvas_input = app.canvas.width.to_string();
                 app.mode = AppMode::NewCanvas;
+                return;
+            }
+            KeyCode::Char('r') => {
+                // Resize canvas dialog
+                app.new_canvas_width = app.canvas.width;
+                app.new_canvas_height = app.canvas.height;
+                app.new_canvas_cursor = 0;
+                app.new_canvas_input = app.canvas.width.to_string();
+                app.mode = AppMode::ResizeCanvas;
                 return;
             }
             KeyCode::Char('t') => {
@@ -660,30 +682,84 @@ fn handle_palette_dialog(app: &mut App, code: KeyCode) {
     }
 }
 
+/// Parse the input buffer into a dimension value, falling back to the given default.
+fn parse_canvas_input(input: &str, default: usize) -> usize {
+    if input.is_empty() {
+        default
+    } else {
+        input.parse::<usize>().unwrap_or(default)
+    }
+}
+
+/// Sync the text buffer to the stored width/height, then load the other field into the buffer.
+fn switch_canvas_field(app: &mut App) {
+    use crate::canvas::{MIN_DIMENSION, MAX_DIMENSION};
+    // Store current buffer into active field
+    let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+    let clamped = val.clamp(MIN_DIMENSION, MAX_DIMENSION);
+    if app.new_canvas_cursor == 0 {
+        app.new_canvas_width = clamped;
+    } else {
+        app.new_canvas_height = clamped;
+    }
+    // Switch cursor
+    app.new_canvas_cursor = 1 - app.new_canvas_cursor;
+    // Load other field into buffer
+    let other_val = if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height };
+    app.new_canvas_input = other_val.to_string();
+}
+
 fn handle_new_canvas(app: &mut App, code: KeyCode) {
     use crate::canvas::{MIN_DIMENSION, MAX_DIMENSION};
 
     match code {
-        KeyCode::Up | KeyCode::Down => {
-            app.new_canvas_cursor = 1 - app.new_canvas_cursor;
+        KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+            switch_canvas_field(app);
         }
         KeyCode::Left => {
+            // ±1 decrement
+            let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+            let new_val = val.saturating_sub(1).max(MIN_DIMENSION);
             if app.new_canvas_cursor == 0 {
-                app.new_canvas_width = app.new_canvas_width.saturating_sub(8).max(MIN_DIMENSION);
+                app.new_canvas_width = new_val;
             } else {
-                app.new_canvas_height = app.new_canvas_height.saturating_sub(8).max(MIN_DIMENSION);
+                app.new_canvas_height = new_val;
             }
+            app.new_canvas_input = new_val.to_string();
         }
         KeyCode::Right => {
+            // ±1 increment
+            let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+            let new_val = (val + 1).min(MAX_DIMENSION);
             if app.new_canvas_cursor == 0 {
-                app.new_canvas_width = (app.new_canvas_width + 8).min(MAX_DIMENSION);
+                app.new_canvas_width = new_val;
             } else {
-                app.new_canvas_height = (app.new_canvas_height + 8).min(MAX_DIMENSION);
+                app.new_canvas_height = new_val;
+            }
+            app.new_canvas_input = new_val.to_string();
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            if app.new_canvas_input.len() < 3 {
+                app.new_canvas_input.push(c);
             }
         }
+        KeyCode::Backspace => {
+            app.new_canvas_input.pop();
+        }
         KeyCode::Enter => {
-            let w = app.new_canvas_width;
-            let h = app.new_canvas_height;
+            // Parse active field; empty input falls back to current canvas size
+            let default_dim = if app.new_canvas_cursor == 0 { app.canvas.width } else { app.canvas.height };
+            let buf_val = parse_canvas_input(&app.new_canvas_input, default_dim);
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = buf_val;
+            } else {
+                app.new_canvas_height = buf_val;
+            }
+            let w = app.new_canvas_width.clamp(MIN_DIMENSION, MAX_DIMENSION);
+            let h = app.new_canvas_height.clamp(MIN_DIMENSION, MAX_DIMENSION);
+            let clamped = w != app.new_canvas_width || h != app.new_canvas_height;
+            app.new_canvas_width = w;
+            app.new_canvas_height = h;
             app.canvas = Canvas::new_with_size(w, h);
             app.history = History::new();
             app.dirty = false;
@@ -696,13 +772,134 @@ fn handle_new_canvas(app: &mut App, code: KeyCode) {
             app.viewport_y = 0;
             app.tool_state = ToolState::Idle;
             app.mode = AppMode::Normal;
-            app.set_status(&format!("New canvas {}x{}", w, h));
+            if clamped {
+                app.set_status(&format!("New canvas {}x{} (clamped to {}-{})", w, h, MIN_DIMENSION, MAX_DIMENSION));
+            } else {
+                app.set_status(&format!("New canvas {}x{}", w, h));
+            }
         }
         KeyCode::Esc => {
             app.mode = AppMode::Normal;
         }
         _ => {}
     }
+}
+
+fn handle_resize_canvas(app: &mut App, code: KeyCode) {
+    use crate::canvas::{MIN_DIMENSION, MAX_DIMENSION};
+
+    match code {
+        KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+            switch_canvas_field(app);
+        }
+        KeyCode::Left => {
+            let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+            let new_val = val.saturating_sub(1).max(MIN_DIMENSION);
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = new_val;
+            } else {
+                app.new_canvas_height = new_val;
+            }
+            app.new_canvas_input = new_val.to_string();
+        }
+        KeyCode::Right => {
+            let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+            let new_val = (val + 1).min(MAX_DIMENSION);
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = new_val;
+            } else {
+                app.new_canvas_height = new_val;
+            }
+            app.new_canvas_input = new_val.to_string();
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            if app.new_canvas_input.len() < 3 {
+                app.new_canvas_input.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            app.new_canvas_input.pop();
+        }
+        KeyCode::Enter => {
+            // Parse active field
+            let default_dim = if app.new_canvas_cursor == 0 { app.canvas.width } else { app.canvas.height };
+            let buf_val = parse_canvas_input(&app.new_canvas_input, default_dim);
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = buf_val;
+            } else {
+                app.new_canvas_height = buf_val;
+            }
+            let w = app.new_canvas_width.clamp(MIN_DIMENSION, MAX_DIMENSION);
+            let h = app.new_canvas_height.clamp(MIN_DIMENSION, MAX_DIMENSION);
+            app.new_canvas_width = w;
+            app.new_canvas_height = h;
+
+            // Same size → no-op
+            if w == app.canvas.width && h == app.canvas.height {
+                app.mode = AppMode::Normal;
+                app.set_status("Same size — no resize needed");
+                return;
+            }
+
+            // Shrinking → show crop warning
+            if w < app.canvas.width || h < app.canvas.height {
+                app.mode = AppMode::ResizeCropConfirm;
+                return;
+            }
+
+            // Enlarging → apply immediately
+            do_resize(app, w, h);
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_resize_crop_confirm(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let w = app.new_canvas_width;
+            let h = app.new_canvas_height;
+            do_resize(app, w, h);
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+            app.set_status("Resize cancelled");
+        }
+        _ => {}
+    }
+}
+
+/// Execute the resize with CanvasSnapshot for undo.
+fn do_resize(app: &mut App, w: usize, h: usize) {
+    // Step 1: capture old snapshot
+    let old_cells = app.canvas.cells();
+    let old_w = app.canvas.width;
+    let old_h = app.canvas.height;
+
+    // Step 2: resize
+    app.canvas.resize(w, h);
+
+    // Step 3: capture new snapshot
+    let new_cells = app.canvas.cells();
+    let new_w = app.canvas.width;
+    let new_h = app.canvas.height;
+
+    // Step 4: push to history
+    app.history.commit(Action::CanvasSnapshot {
+        old_cells, old_w, old_h,
+        new_cells, new_w, new_h,
+    });
+
+    // Step 5: reset viewport
+    app.viewport_x = 0;
+    app.viewport_y = 0;
+
+    app.dirty = true;
+    app.mode = AppMode::Normal;
+    app.set_status(&format!("Resized to {}x{}", new_w, new_h));
 }
 
 fn handle_hex_input(app: &mut App, key: KeyEvent) {
@@ -888,5 +1085,178 @@ mod tests {
         // With viewport at (10, 5), the first screen cell maps to canvas (10, 5)
         assert_eq!(a.screen_to_canvas(10, 5, 1, 10, 5), Some((10, 5)));
         assert_eq!(a.screen_to_canvas(14, 8, 1, 10, 5), Some((14, 8)));
+    }
+
+    // --- Cycle 16: NewCanvas free-text input tests ---
+
+    #[test]
+    fn test_new_canvas_digit_input() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = String::new();
+
+        handle_new_canvas(&mut app, KeyCode::Char('5'));
+        handle_new_canvas(&mut app, KeyCode::Char('0'));
+        assert_eq!(app.new_canvas_input, "50");
+    }
+
+    #[test]
+    fn test_new_canvas_backspace() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = "50".to_string();
+
+        handle_new_canvas(&mut app, KeyCode::Backspace);
+        assert_eq!(app.new_canvas_input, "5");
+        handle_new_canvas(&mut app, KeyCode::Backspace);
+        assert_eq!(app.new_canvas_input, "");
+    }
+
+    #[test]
+    fn test_new_canvas_clamp_min() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = "3".to_string();
+
+        handle_new_canvas(&mut app, KeyCode::Enter);
+        // Should create canvas with width clamped to MIN_DIMENSION (8)
+        assert_eq!(app.canvas.width, crate::canvas::MIN_DIMENSION);
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_new_canvas_clamp_max() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = "200".to_string();
+        app.new_canvas_height = 32;
+
+        handle_new_canvas(&mut app, KeyCode::Enter);
+        // Should create canvas with width clamped to MAX_DIMENSION (128)
+        assert_eq!(app.canvas.width, crate::canvas::MAX_DIMENSION);
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_new_canvas_arrow_increment() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_width = 48;
+        app.new_canvas_input = "48".to_string();
+
+        handle_new_canvas(&mut app, KeyCode::Right);
+        assert_eq!(app.new_canvas_input, "49");
+        assert_eq!(app.new_canvas_width, 49);
+
+        handle_new_canvas(&mut app, KeyCode::Left);
+        assert_eq!(app.new_canvas_input, "48");
+        assert_eq!(app.new_canvas_width, 48);
+    }
+
+    #[test]
+    fn test_new_canvas_tab_switch() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_width = 48;
+        app.new_canvas_height = 32;
+        app.new_canvas_input = "48".to_string();
+
+        handle_new_canvas(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_canvas_cursor, 1);
+        assert_eq!(app.new_canvas_input, "32"); // loaded height
+        assert_eq!(app.new_canvas_width, 48); // width stored
+    }
+
+    #[test]
+    fn test_new_canvas_empty_input() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_width = 48;
+        app.new_canvas_height = 32;
+        app.new_canvas_input = String::new(); // empty
+
+        handle_new_canvas(&mut app, KeyCode::Enter);
+        // Empty input uses current width (48)
+        assert_eq!(app.canvas.width, 48);
+        assert_eq!(app.canvas.height, 32);
+    }
+
+    // --- Cycle 16: Resize Canvas tests ---
+
+    #[test]
+    fn test_resize_larger_preserves_content() {
+        let mut app = App::new();
+        // Place a cell
+        let cell = crate::cell::Cell {
+            ch: crate::cell::blocks::FULL,
+            fg: Some(crate::cell::Rgb { r: 205, g: 0, b: 0 }),
+            bg: None,
+        };
+        app.canvas.set(5, 5, cell);
+
+        // Resize larger via do_resize
+        app.new_canvas_width = 64;
+        app.new_canvas_height = 48;
+        do_resize(&mut app, 64, 48);
+
+        assert_eq!(app.canvas.width, 64);
+        assert_eq!(app.canvas.height, 48);
+        assert_eq!(app.canvas.get(5, 5), Some(cell));
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_resize_smaller_warns() {
+        let mut app = App::new();
+        app.mode = AppMode::ResizeCanvas;
+        app.new_canvas_width = 16;
+        app.new_canvas_height = 16;
+        app.new_canvas_input = "16".to_string();
+        app.new_canvas_cursor = 0;
+
+        // Enter on a shrink should go to crop confirm
+        handle_resize_canvas(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::ResizeCropConfirm);
+    }
+
+    #[test]
+    fn test_resize_undo_restore() {
+        let mut app = App::new();
+        let cell = crate::cell::Cell {
+            ch: crate::cell::blocks::FULL,
+            fg: Some(crate::cell::Rgb { r: 205, g: 0, b: 0 }),
+            bg: None,
+        };
+        app.canvas.set(10, 10, cell);
+        let orig_w = app.canvas.width;
+        let orig_h = app.canvas.height;
+
+        // Resize
+        do_resize(&mut app, 64, 48);
+        assert_eq!(app.canvas.width, 64);
+
+        // Undo should restore original size and content
+        app.undo();
+        assert_eq!(app.canvas.width, orig_w);
+        assert_eq!(app.canvas.height, orig_h);
+        assert_eq!(app.canvas.get(10, 10), Some(cell));
+    }
+
+    #[test]
+    fn test_resize_viewport_reset() {
+        let mut app = App::new();
+        app.viewport_x = 10;
+        app.viewport_y = 5;
+
+        do_resize(&mut app, 64, 48);
+        assert_eq!(app.viewport_x, 0);
+        assert_eq!(app.viewport_y, 0);
     }
 }

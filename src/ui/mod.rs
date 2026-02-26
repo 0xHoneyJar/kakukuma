@@ -155,6 +155,8 @@ pub fn render(f: &mut Frame, app: &App) -> CanvasArea {
         AppMode::PaletteRename => render_text_input(f, app, size, "Rename Palette", "Enter new name:"),
         AppMode::PaletteExport => render_text_input(f, app, size, "Export Palette", "Enter destination path:"),
         AppMode::NewCanvas => render_new_canvas(f, app, size),
+        AppMode::ResizeCanvas => render_resize_canvas(f, app, size),
+        AppMode::ResizeCropConfirm => render_resize_crop_confirm(f, app, size),
         AppMode::HexColorInput => render_hex_input(f, app, size),
         AppMode::BlockPicker => render_block_picker(f, app, size),
         _ => {}
@@ -1015,11 +1017,19 @@ fn render_block_picker(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_new_canvas(f: &mut Frame, app: &App, area: Rect) {
+    render_canvas_size_dialog(f, app, area, " New Canvas ", false);
+}
+
+fn render_resize_canvas(f: &mut Frame, app: &App, area: Rect) {
+    render_canvas_size_dialog(f, app, area, " Resize Canvas ", true);
+}
+
+fn render_resize_crop_confirm(f: &mut Frame, app: &App, area: Rect) {
     use ratatui::text::{Line, Span};
 
     let theme = app.theme();
-    let w = 30u16;
-    let h = 8u16;
+    let w = 38u16;
+    let h = 7u16;
     let dialog_area = Rect::new(
         area.width.saturating_sub(w) / 2,
         area.height.saturating_sub(h) / 2,
@@ -1028,37 +1038,90 @@ fn render_new_canvas(f: &mut Frame, app: &App, area: Rect) {
     );
     f.render_widget(Clear, dialog_area);
 
-    let w_style = if app.new_canvas_cursor == 0 {
-        Style::default().fg(Color::Black).bg(theme.highlight).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let h_style = if app.new_canvas_cursor == 1 {
-        Style::default().fg(Color::Black).bg(theme.highlight).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
     let dim = Style::default().fg(theme.dim);
+    let warn = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled(" Width:  ", dim),
-            Span::styled(format!("\u{25C0} {:>3} \u{25B6}", app.new_canvas_width), w_style),
-        ]),
+        Line::from(Span::styled(" Content will be cropped!", warn)),
         Line::from(Span::raw("")),
-        Line::from(vec![
-            Span::styled(" Height: ", dim),
-            Span::styled(format!("\u{25C0} {:>3} \u{25B6}", app.new_canvas_height), h_style),
-        ]),
+        Line::from(Span::styled(
+            format!(" {}x{} \u{2192} {}x{}", app.canvas.width, app.canvas.height, app.new_canvas_width, app.new_canvas_height),
+            Style::default().fg(Color::White),
+        )),
         Line::from(Span::raw("")),
-        Line::from(Span::styled(" Enter=Create  Esc=Cancel", dim)),
+        Line::from(Span::styled(" Enter=Confirm  Any key=Cancel", dim)),
     ];
 
     let dialog = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(" New Canvas ")
+            .title(" Resize Warning ")
+            .style(Style::default().fg(Color::Yellow).bg(theme.panel_bg)),
+    );
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_canvas_size_dialog(f: &mut Frame, app: &App, area: Rect, title: &str, show_current: bool) {
+    use ratatui::text::{Line, Span};
+
+    let theme = app.theme();
+    let w = 34u16;
+    let h = if show_current { 10u16 } else { 9u16 };
+    let dialog_area = Rect::new(
+        area.width.saturating_sub(w) / 2,
+        area.height.saturating_sub(h) / 2,
+        w.min(area.width),
+        h.min(area.height),
+    );
+    f.render_widget(Clear, dialog_area);
+
+    let active_style = Style::default().fg(Color::Black).bg(theme.highlight).add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(Color::White);
+    let dim = Style::default().fg(theme.dim);
+
+    // Show the input buffer for the active field, stored value for the other
+    let (w_display, h_display) = if app.new_canvas_cursor == 0 {
+        (format!("{}_", app.new_canvas_input), format!("{}", app.new_canvas_height))
+    } else {
+        (format!("{}", app.new_canvas_width), format!("{}_", app.new_canvas_input))
+    };
+
+    let w_style = if app.new_canvas_cursor == 0 { active_style } else { inactive_style };
+    let h_style = if app.new_canvas_cursor == 1 { active_style } else { inactive_style };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" Width:  ", dim),
+            Span::styled(format!("\u{25C0} {:>4} \u{25B6}", w_display), w_style),
+        ]),
+        Line::from(Span::raw("")),
+        Line::from(vec![
+            Span::styled(" Height: ", dim),
+            Span::styled(format!("\u{25C0} {:>4} \u{25B6}", h_display), h_style),
+        ]),
+    ];
+
+    if show_current {
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            format!(" Current: {}x{}", app.canvas.width, app.canvas.height),
+            dim,
+        )));
+    }
+
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        " \u{2190}\u{2192}=\u{00B1}1  Type digits  Tab=switch",
+        dim,
+    )));
+    lines.push(Line::from(Span::styled(" Enter=OK  Esc=Cancel", dim)));
+
+    let dialog = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(title)
             .style(Style::default().fg(theme.accent).bg(theme.panel_bg)),
     );
     f.render_widget(dialog, dialog_area);
