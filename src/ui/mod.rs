@@ -6,6 +6,7 @@ pub mod statusbar;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, AppMode};
@@ -159,6 +160,8 @@ pub fn render(f: &mut Frame, app: &App) -> CanvasArea {
         AppMode::ResizeCropConfirm => render_resize_crop_confirm(f, app, size),
         AppMode::HexColorInput => render_hex_input(f, app, size),
         AppMode::BlockPicker => render_block_picker(f, app, size),
+        AppMode::ImportBrowse => render_import_browse(f, app, size),
+        AppMode::ImportOptions => render_import_options(f, app, size),
         _ => {}
     }
 
@@ -1124,5 +1127,152 @@ fn render_canvas_size_dialog(f: &mut Frame, app: &App, area: Rect, title: &str, 
             .title(title)
             .style(Style::default().fg(theme.accent).bg(theme.panel_bg)),
     );
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_import_browse(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let file_count = app.file_dialog_files.len();
+    let height = (file_count as u16 + 4).min(20);
+    let width = 50;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(x, y, width, height);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Show current directory (truncated)
+    let dir_str = app.import_dir.to_string_lossy();
+    let dir_display = if dir_str.len() > 44 {
+        format!("...{}", &dir_str[dir_str.len() - 41..])
+    } else {
+        dir_str.to_string()
+    };
+    lines.push(Line::from(Span::styled(
+        format!(" {}", dir_display),
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let visible_start = if app.file_dialog_selected > (height as usize).saturating_sub(6) {
+        app.file_dialog_selected - (height as usize).saturating_sub(6)
+    } else {
+        0
+    };
+
+    for (i, filename) in app.file_dialog_files.iter().enumerate().skip(visible_start) {
+        if lines.len() >= (height as usize).saturating_sub(3) {
+            break;
+        }
+        let is_selected = i == app.file_dialog_selected;
+        let prefix = if is_selected { "> " } else { "  " };
+        let style = if is_selected {
+            Style::default().fg(Color::Black).bg(theme.highlight)
+        } else if filename.ends_with('/') {
+            Style::default().fg(theme.accent).bg(theme.panel_bg)
+        } else {
+            Style::default().fg(Color::White).bg(theme.panel_bg)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{}{}", prefix, filename),
+            style,
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " \u{2191}\u{2193} Navigate  Enter Open  Esc Cancel",
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .style(Style::default().fg(Color::White).bg(theme.panel_bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Import Image ")
+                .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
+        );
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_import_options(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let height = 12u16;
+    let width = 44;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(x, y, width, height);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Show selected file name
+    let filename = app
+        .import_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("(unknown)");
+    lines.push(Line::from(Span::styled(
+        format!(" File: {}", filename),
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+    lines.push(Line::from(""));
+
+    let cursor = app.import_options_cursor;
+
+    // Row 0: Fit mode
+    let fit_label = if app.import_fit == 0 { "Fit to Canvas" } else { "Custom Size" };
+    let fit_style = if cursor == 0 {
+        Style::default().fg(Color::Black).bg(theme.highlight)
+    } else {
+        Style::default().fg(Color::White).bg(theme.panel_bg)
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  Fit:     < {} >", fit_label),
+        fit_style,
+    )));
+
+    // Row 1: Color mode
+    let color_label = if app.import_color == 0 { "256 Color" } else { "16 Color" };
+    let color_style = if cursor == 1 {
+        Style::default().fg(Color::Black).bg(theme.highlight)
+    } else {
+        Style::default().fg(Color::White).bg(theme.panel_bg)
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  Colors:  < {} >", color_label),
+        color_style,
+    )));
+
+    // Row 2: Character set
+    let charset_label = if app.import_charset == 0 { "Full Blocks" } else { "Half Blocks" };
+    let charset_style = if cursor == 2 {
+        Style::default().fg(Color::Black).bg(theme.highlight)
+    } else {
+        Style::default().fg(Color::White).bg(theme.panel_bg)
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  Charset: < {} >", charset_label),
+        charset_style,
+    )));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " \u{2190}\u{2192} Change  Enter Import  Esc Back",
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .style(Style::default().fg(Color::White).bg(theme.panel_bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Import Options ")
+                .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
+        );
+    f.render_widget(Clear, dialog_area);
     f.render_widget(dialog, dialog_area);
 }

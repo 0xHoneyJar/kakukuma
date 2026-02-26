@@ -3,6 +3,7 @@ mod canvas;
 mod cell;
 mod export;
 mod history;
+mod import;
 mod input;
 mod palette;
 mod project;

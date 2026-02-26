@@ -30,6 +30,8 @@ pub enum AppMode {
     ResizeCropConfirm,
     HexColorInput,
     BlockPicker,
+    ImportBrowse,
+    ImportOptions,
 }
 
 pub struct StatusMessage {
@@ -115,6 +117,13 @@ pub struct App {
     // Block picker dialog cursor
     pub block_picker_row: usize,
     pub block_picker_col: usize,
+    // Import state
+    pub import_path: Option<std::path::PathBuf>,
+    pub import_dir: std::path::PathBuf,
+    pub import_fit: usize,     // 0=FitToCanvas, 1=Custom
+    pub import_color: usize,   // 0=256, 1=16
+    pub import_charset: usize, // 0=Full, 1=Half
+    pub import_options_cursor: usize, // 0=fit, 1=color, 2=charset
 }
 
 impl App {
@@ -175,6 +184,12 @@ impl App {
             viewport_h: 32,
             block_picker_row: 0,
             block_picker_col: 0,
+            import_path: None,
+            import_dir: std::env::current_dir().unwrap_or_default(),
+            import_fit: 0,
+            import_color: 0,
+            import_charset: 1, // Default to HalfBlocks
+            import_options_cursor: 0,
         };
         app.rebuild_palette_layout();
         app

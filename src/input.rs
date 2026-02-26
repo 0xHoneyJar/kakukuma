@@ -159,6 +159,18 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
             }
             return;
         }
+        AppMode::ImportBrowse => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_import_browse(app, code);
+            }
+            return;
+        }
+        AppMode::ImportOptions => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_import_options(app, code);
+            }
+            return;
+        }
         _ => {}
     }
 
@@ -228,6 +240,11 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.export_cursor = 0;
                 app.export_color_format = 0;
                 app.mode = AppMode::ExportDialog;
+                return;
+            }
+            KeyCode::Char('i') => {
+                // Import image dialog
+                open_import_dialog(app);
                 return;
             }
             KeyCode::Char('c') => {
@@ -1042,6 +1059,222 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, canvas_area: &CanvasArea) {
     }
 }
 
+/// Image file extensions accepted by the import browser.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp"];
+
+/// Check if a filename has an image extension.
+fn is_image_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(&format!(".{}", ext)))
+}
+
+/// List image files and directories in a given directory.
+fn list_import_entries(dir: &std::path::Path) -> Vec<String> {
+    let mut entries = Vec::new();
+
+    // Add parent directory navigation (unless at root)
+    if dir.parent().is_some() {
+        entries.push("..".to_string());
+    }
+
+    if let Ok(read_dir) = std::fs::read_dir(dir) {
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                // Skip hidden files
+                if name.starts_with('.') {
+                    continue;
+                }
+                if path.is_dir() {
+                    dirs.push(format!("{}/", name));
+                } else if is_image_file(name) {
+                    files.push(name.to_string());
+                }
+            }
+        }
+        dirs.sort();
+        files.sort();
+        entries.extend(dirs);
+        entries.extend(files);
+    }
+
+    entries
+}
+
+/// Open the import file browser dialog.
+fn open_import_dialog(app: &mut App) {
+    let entries = list_import_entries(&app.import_dir);
+    app.file_dialog_files = entries;
+    app.file_dialog_selected = 0;
+    if app.file_dialog_files.is_empty() {
+        app.set_status("No image files found");
+    } else {
+        app.mode = AppMode::ImportBrowse;
+    }
+}
+
+fn handle_import_browse(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Up => {
+            if app.file_dialog_selected > 0 {
+                app.file_dialog_selected -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.file_dialog_selected + 1 < app.file_dialog_files.len() {
+                app.file_dialog_selected += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(entry) = app.file_dialog_files.get(app.file_dialog_selected).cloned() {
+                if entry == ".." {
+                    // Navigate to parent directory
+                    if let Some(parent) = app.import_dir.parent() {
+                        app.import_dir = parent.to_path_buf();
+                    }
+                    app.file_dialog_files = list_import_entries(&app.import_dir);
+                    app.file_dialog_selected = 0;
+                } else if entry.ends_with('/') {
+                    // Navigate into directory
+                    let dir_name = &entry[..entry.len() - 1];
+                    app.import_dir = app.import_dir.join(dir_name);
+                    app.file_dialog_files = list_import_entries(&app.import_dir);
+                    app.file_dialog_selected = 0;
+                } else {
+                    // Image file selected — store path and go to options
+                    let full_path = app.import_dir.join(&entry);
+                    app.import_path = Some(full_path);
+                    app.import_options_cursor = 0;
+                    app.mode = AppMode::ImportOptions;
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_import_options(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Up => {
+            if app.import_options_cursor > 0 {
+                app.import_options_cursor -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.import_options_cursor < 2 {
+                app.import_options_cursor += 1;
+            }
+        }
+        KeyCode::Left | KeyCode::Right => {
+            match app.import_options_cursor {
+                0 => app.import_fit = 1 - app.import_fit,
+                1 => app.import_color = 1 - app.import_color,
+                2 => app.import_charset = 1 - app.import_charset,
+                _ => {}
+            }
+        }
+        KeyCode::Enter => {
+            do_import(app);
+        }
+        KeyCode::Esc => {
+            // Return to browse
+            app.mode = AppMode::ImportBrowse;
+        }
+        _ => {}
+    }
+}
+
+fn do_import(app: &mut App) {
+    use crate::import::{self, FitMode, ImportCharSet, ImportColorMode, ImportOptions as ImportOpts};
+
+    let path = match &app.import_path {
+        Some(p) => p.clone(),
+        None => {
+            app.set_status("No file selected");
+            app.mode = AppMode::Normal;
+            return;
+        }
+    };
+
+    let fit_mode = if app.import_fit == 0 {
+        FitMode::FitToCanvas
+    } else {
+        FitMode::CustomSize(app.canvas.width, app.canvas.height)
+    };
+
+    let color_mode = if app.import_color == 0 {
+        ImportColorMode::Color256
+    } else {
+        ImportColorMode::Color16
+    };
+
+    let char_set = if app.import_charset == 0 {
+        ImportCharSet::FullBlocks
+    } else {
+        ImportCharSet::HalfBlocks
+    };
+
+    let opts = ImportOpts {
+        fit_mode,
+        color_mode,
+        char_set,
+    };
+
+    let target_w = app.canvas.width;
+    let target_h = app.canvas.height;
+
+    match import::import_image(&path, target_w, target_h, &opts) {
+        Ok(cells) => {
+            // Snapshot for undo
+            let old_cells = app.canvas.cells();
+            let old_w = app.canvas.width;
+            let old_h = app.canvas.height;
+
+            // Apply imported cells to canvas (clamped to canvas bounds)
+            for (y, row) in cells.iter().take(app.canvas.height).enumerate() {
+                for (x, cell) in row.iter().take(app.canvas.width).enumerate() {
+                    app.canvas.set(x, y, *cell);
+                }
+            }
+
+            let new_cells = app.canvas.cells();
+            let new_w = app.canvas.width;
+            let new_h = app.canvas.height;
+
+            app.history.commit(Action::CanvasSnapshot {
+                old_cells, old_w, old_h,
+                new_cells, new_w, new_h,
+            });
+
+            app.dirty = true;
+            app.mode = AppMode::Normal;
+            app.viewport_x = 0;
+            app.viewport_y = 0;
+
+            // Check if GIF via extension
+            let is_gif = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("gif"))
+                .unwrap_or(false);
+            if is_gif {
+                app.set_status("Imported (GIF: first frame only)");
+            } else {
+                app.set_status("Image imported");
+            }
+        }
+        Err(e) => {
+            app.set_status(&format!("Import failed: {}", e));
+            app.mode = AppMode::Normal;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1258,5 +1491,179 @@ mod tests {
         do_resize(&mut app, 64, 48);
         assert_eq!(app.viewport_x, 0);
         assert_eq!(app.viewport_y, 0);
+    }
+
+    // --- Import browse tests ---
+
+    #[test]
+    fn test_import_browse_opens() {
+        let mut app = App::new();
+        assert_eq!(app.mode, AppMode::Normal);
+
+        // Simulate Ctrl+I
+        handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL)),
+            &area(),
+        );
+
+        // Should be in ImportBrowse or show status (depends on files in cwd)
+        assert!(
+            app.mode == AppMode::ImportBrowse
+                || app.status_message.is_some(),
+            "Ctrl+I should open import dialog or show status"
+        );
+    }
+
+    #[test]
+    fn test_import_browse_filter() {
+        // list_import_entries should only return image files and directories
+        let dir = std::env::temp_dir().join("kakukuma_test_browse_filter");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create test files
+        std::fs::write(dir.join("photo.png"), b"fake").unwrap();
+        std::fs::write(dir.join("pic.jpg"), b"fake").unwrap();
+        std::fs::write(dir.join("data.txt"), b"fake").unwrap();
+        std::fs::write(dir.join("notes.md"), b"fake").unwrap();
+        std::fs::write(dir.join("image.gif"), b"fake").unwrap();
+
+        let entries = list_import_entries(&dir);
+
+        // Should contain image files but not .txt or .md
+        assert!(entries.iter().any(|e| e == "photo.png"));
+        assert!(entries.iter().any(|e| e == "pic.jpg"));
+        assert!(entries.iter().any(|e| e == "image.gif"));
+        assert!(!entries.iter().any(|e| e == "data.txt"));
+        assert!(!entries.iter().any(|e| e == "notes.md"));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_import_browse_stores_path() {
+        let dir = std::env::temp_dir().join("kakukuma_test_browse_select");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("test.png"), b"fake").unwrap();
+
+        let mut app = App::new();
+        app.import_dir = dir.clone();
+        app.file_dialog_files = list_import_entries(&dir);
+        app.mode = AppMode::ImportBrowse;
+
+        // Find the index of test.png
+        let png_idx = app.file_dialog_files.iter().position(|e| e == "test.png");
+        assert!(png_idx.is_some(), "test.png should be in file list");
+        app.file_dialog_selected = png_idx.unwrap();
+
+        // Press Enter to select
+        handle_import_browse(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.mode, AppMode::ImportOptions);
+        assert!(app.import_path.is_some());
+        let path = app.import_path.unwrap();
+        assert!(path.to_string_lossy().contains("test.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- Import options tests ---
+
+    #[test]
+    fn test_import_options_navigation() {
+        let mut app = App::new();
+        app.mode = AppMode::ImportOptions;
+        app.import_options_cursor = 0;
+
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 1);
+
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 2);
+
+        // Can't go past 2
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 2);
+
+        handle_import_options(&mut app, KeyCode::Up);
+        assert_eq!(app.import_options_cursor, 1);
+
+        // Toggle color mode
+        assert_eq!(app.import_color, 0);
+        handle_import_options(&mut app, KeyCode::Right);
+        assert_eq!(app.import_color, 1);
+        handle_import_options(&mut app, KeyCode::Left);
+        assert_eq!(app.import_color, 0);
+    }
+
+    #[test]
+    fn test_import_applies_to_canvas() {
+        let dir = std::env::temp_dir().join("kakukuma_test_import_apply");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img_path = dir.join("red_8x8.png");
+
+        // Create an 8x8 red image matching minimum canvas size
+        let mut img = image::RgbaImage::new(8, 8);
+        for x in 0..8u32 {
+            for y in 0..8u32 {
+                img.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
+            }
+        }
+        img.save(&img_path).unwrap();
+
+        let mut app = App::new();
+        // Use 8x8 canvas so image fills exactly (no letterbox)
+        app.canvas = Canvas::new_with_size(8, 8);
+        app.import_path = Some(img_path.clone());
+        app.import_charset = 0; // FullBlocks
+        app.import_color = 0;   // 256 color
+        app.import_fit = 0;     // FitToCanvas
+
+        do_import(&mut app);
+
+        assert_eq!(app.mode, AppMode::Normal);
+        // Cell (0,0) should have bg color (from the red image)
+        let cell = app.canvas.get(0, 0).unwrap();
+        assert!(cell.bg.is_some(), "Canvas cell should have imported color");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_import_undo() {
+        let dir = std::env::temp_dir().join("kakukuma_test_import_undo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img_path = dir.join("blue_8x8.png");
+
+        let mut img = image::RgbaImage::new(8, 8);
+        for x in 0..8u32 {
+            for y in 0..8u32 {
+                img.put_pixel(x, y, image::Rgba([0, 0, 255, 255]));
+            }
+        }
+        img.save(&img_path).unwrap();
+
+        let mut app = App::new();
+        // Use 8x8 canvas so image fills exactly
+        app.canvas = Canvas::new_with_size(8, 8);
+        let orig_cell = app.canvas.get(0, 0).unwrap();
+
+        app.import_path = Some(img_path.clone());
+        app.import_charset = 0;
+        app.import_color = 0;
+        app.import_fit = 0;
+        do_import(&mut app);
+
+        // Canvas should be modified
+        let imported_cell = app.canvas.get(0, 0).unwrap();
+        assert!(imported_cell.bg.is_some());
+
+        // Undo should restore
+        app.undo();
+        let restored_cell = app.canvas.get(0, 0).unwrap();
+        assert_eq!(restored_cell, orig_cell, "Undo should restore original canvas");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
