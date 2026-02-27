@@ -4,6 +4,7 @@ mod cell;
 mod cli;
 mod export;
 mod history;
+mod import;
 mod input;
 mod oplog;
 mod palette;

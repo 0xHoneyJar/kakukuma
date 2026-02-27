@@ -1,0 +1,31 @@
+{
+  "plan_id": "plan-20260226-cycle16",
+  "branch": "feature/cycle-16-image-import-canvas-polish",
+  "state": "JACKED_OUT",
+  "timestamps": {
+    "started": "2026-02-26T00:00:00Z",
+    "last_activity": "2026-02-27T00:00:00Z"
+  },
+  "sprints": {
+    "total": 4,
+    "completed": 4,
+    "current": null,
+    "list": [
+      {"id": "sprint-1", "status": "completed", "cycles": 1, "files_changed": 6},
+      {"id": "sprint-2", "status": "completed", "cycles": 1, "files_changed": 7},
+      {"id": "sprint-3", "status": "completed", "cycles": 1, "files_changed": 5},
+      {"id": "sprint-4", "status": "completed", "cycles": 1, "files_changed": 5}
+    ]
+  },
+  "options": {
+    "from": 1,
+    "to": 4,
+    "max_cycles": 20,
+    "timeout_hours": 8
+  },
+  "metrics": {
+    "total_cycles": 4,
+    "total_files_changed": 23,
+    "total_findings_fixed": 10
+  }
+}

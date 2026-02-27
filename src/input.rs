@@ -1,8 +1,8 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, MessageLevel};
 use crate::canvas::Canvas;
-use crate::history::History;
+use crate::history::{Action, History};
 use crate::palette::{PaletteItem, PaletteSection};
 use crate::tools::{ToolKind, ToolState};
 
@@ -135,6 +135,18 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
             }
             return;
         }
+        AppMode::ResizeCanvas => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_resize_canvas(app, code);
+            }
+            return;
+        }
+        AppMode::ResizeCropConfirm => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_resize_crop_confirm(app, code);
+            }
+            return;
+        }
         AppMode::HexColorInput => {
             if let Event::Key(key) = event {
                 handle_hex_input(app, key);
@@ -144,6 +156,18 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
         AppMode::BlockPicker => {
             if let Event::Key(key) = event {
                 handle_block_picker(app, key);
+            }
+            return;
+        }
+        AppMode::ImportBrowse => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_import_browse(app, code);
+            }
+            return;
+        }
+        AppMode::ImportOptions => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_import_options(app, code);
             }
             return;
         }
@@ -192,7 +216,17 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.new_canvas_width = app.canvas.width;
                 app.new_canvas_height = app.canvas.height;
                 app.new_canvas_cursor = 0;
+                app.new_canvas_input = app.canvas.width.to_string();
                 app.mode = AppMode::NewCanvas;
+                return;
+            }
+            KeyCode::Char('r') => {
+                // Resize canvas dialog
+                app.new_canvas_width = app.canvas.width;
+                app.new_canvas_height = app.canvas.height;
+                app.new_canvas_cursor = 0;
+                app.new_canvas_input = app.canvas.width.to_string();
+                app.mode = AppMode::ResizeCanvas;
                 return;
             }
             KeyCode::Char('t') => {
@@ -208,10 +242,15 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.mode = AppMode::ExportDialog;
                 return;
             }
+            KeyCode::Char('i') => {
+                // Import image dialog
+                open_import_dialog(app);
+                return;
+            }
             KeyCode::Char('c') => {
                 if app.dirty {
                     app.mode = AppMode::Quitting;
-                    app.set_status("Unsaved changes. Quit? (y/n)");
+                    app.set_status_with_level("Unsaved changes. Quit? (y/n)", MessageLevel::Warning);
                 } else {
                     app.running = false;
                 }
@@ -315,6 +354,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 match item {
                     PaletteItem::SectionHeader(section) => {
                         match section {
+                            PaletteSection::Recent => {
+                                app.palette_sections.recent_expanded = !app.palette_sections.recent_expanded;
+                            }
                             PaletteSection::Standard => {
                                 app.palette_sections.standard_expanded = !app.palette_sections.standard_expanded;
                             }
@@ -441,7 +483,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('q') | KeyCode::Char('Q') => {
             if app.dirty {
                 app.mode = AppMode::Quitting;
-                app.set_status("Unsaved changes. Quit? (y/n)");
+                app.set_status_with_level("Unsaved changes. Quit? (y/n)", MessageLevel::Warning);
             } else {
                 app.running = false;
             }
@@ -534,7 +576,7 @@ fn handle_text_input(app: &mut App, key: KeyEvent, purpose: TextInputPurpose) {
         KeyCode::Enter => {
             let input = app.text_input.clone();
             if input.trim().is_empty() {
-                app.set_status("Name cannot be empty");
+                app.set_status_with_level("Name cannot be empty", MessageLevel::Warning);
                 return;
             }
             match purpose {
@@ -660,30 +702,84 @@ fn handle_palette_dialog(app: &mut App, code: KeyCode) {
     }
 }
 
+/// Parse the input buffer into a dimension value, falling back to the given default.
+fn parse_canvas_input(input: &str, default: usize) -> usize {
+    if input.is_empty() {
+        default
+    } else {
+        input.parse::<usize>().unwrap_or(default)
+    }
+}
+
+/// Sync the text buffer to the stored width/height, then load the other field into the buffer.
+fn switch_canvas_field(app: &mut App) {
+    use crate::canvas::{MIN_DIMENSION, MAX_DIMENSION};
+    // Store current buffer into active field
+    let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+    let clamped = val.clamp(MIN_DIMENSION, MAX_DIMENSION);
+    if app.new_canvas_cursor == 0 {
+        app.new_canvas_width = clamped;
+    } else {
+        app.new_canvas_height = clamped;
+    }
+    // Switch cursor
+    app.new_canvas_cursor = 1 - app.new_canvas_cursor;
+    // Load other field into buffer
+    let other_val = if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height };
+    app.new_canvas_input = other_val.to_string();
+}
+
 fn handle_new_canvas(app: &mut App, code: KeyCode) {
     use crate::canvas::{MIN_DIMENSION, MAX_DIMENSION};
 
     match code {
-        KeyCode::Up | KeyCode::Down => {
-            app.new_canvas_cursor = 1 - app.new_canvas_cursor;
+        KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+            switch_canvas_field(app);
         }
         KeyCode::Left => {
+            // ±1 decrement
+            let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+            let new_val = val.saturating_sub(1).max(MIN_DIMENSION);
             if app.new_canvas_cursor == 0 {
-                app.new_canvas_width = app.new_canvas_width.saturating_sub(8).max(MIN_DIMENSION);
+                app.new_canvas_width = new_val;
             } else {
-                app.new_canvas_height = app.new_canvas_height.saturating_sub(8).max(MIN_DIMENSION);
+                app.new_canvas_height = new_val;
             }
+            app.new_canvas_input = new_val.to_string();
         }
         KeyCode::Right => {
+            // ±1 increment
+            let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+            let new_val = (val + 1).min(MAX_DIMENSION);
             if app.new_canvas_cursor == 0 {
-                app.new_canvas_width = (app.new_canvas_width + 8).min(MAX_DIMENSION);
+                app.new_canvas_width = new_val;
             } else {
-                app.new_canvas_height = (app.new_canvas_height + 8).min(MAX_DIMENSION);
+                app.new_canvas_height = new_val;
+            }
+            app.new_canvas_input = new_val.to_string();
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            if app.new_canvas_input.len() < 3 {
+                app.new_canvas_input.push(c);
             }
         }
+        KeyCode::Backspace => {
+            app.new_canvas_input.pop();
+        }
         KeyCode::Enter => {
-            let w = app.new_canvas_width;
-            let h = app.new_canvas_height;
+            // Parse active field; empty input falls back to current canvas size
+            let default_dim = if app.new_canvas_cursor == 0 { app.canvas.width } else { app.canvas.height };
+            let buf_val = parse_canvas_input(&app.new_canvas_input, default_dim);
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = buf_val;
+            } else {
+                app.new_canvas_height = buf_val;
+            }
+            let w = app.new_canvas_width.clamp(MIN_DIMENSION, MAX_DIMENSION);
+            let h = app.new_canvas_height.clamp(MIN_DIMENSION, MAX_DIMENSION);
+            let clamped = w != app.new_canvas_width || h != app.new_canvas_height;
+            app.new_canvas_width = w;
+            app.new_canvas_height = h;
             app.canvas = Canvas::new_with_size(w, h);
             app.history = History::new();
             app.dirty = false;
@@ -696,13 +792,134 @@ fn handle_new_canvas(app: &mut App, code: KeyCode) {
             app.viewport_y = 0;
             app.tool_state = ToolState::Idle;
             app.mode = AppMode::Normal;
-            app.set_status(&format!("New canvas {}x{}", w, h));
+            if clamped {
+                app.set_status_with_level(&format!("New canvas {}x{} (clamped to {}-{})", w, h, MIN_DIMENSION, MAX_DIMENSION), MessageLevel::Warning);
+            } else {
+                app.set_status_with_level(&format!("New canvas {}x{}", w, h), MessageLevel::Success);
+            }
         }
         KeyCode::Esc => {
             app.mode = AppMode::Normal;
         }
         _ => {}
     }
+}
+
+fn handle_resize_canvas(app: &mut App, code: KeyCode) {
+    use crate::canvas::{MIN_DIMENSION, MAX_DIMENSION};
+
+    match code {
+        KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+            switch_canvas_field(app);
+        }
+        KeyCode::Left => {
+            let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+            let new_val = val.saturating_sub(1).max(MIN_DIMENSION);
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = new_val;
+            } else {
+                app.new_canvas_height = new_val;
+            }
+            app.new_canvas_input = new_val.to_string();
+        }
+        KeyCode::Right => {
+            let val = parse_canvas_input(&app.new_canvas_input, if app.new_canvas_cursor == 0 { app.new_canvas_width } else { app.new_canvas_height });
+            let new_val = (val + 1).min(MAX_DIMENSION);
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = new_val;
+            } else {
+                app.new_canvas_height = new_val;
+            }
+            app.new_canvas_input = new_val.to_string();
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            if app.new_canvas_input.len() < 3 {
+                app.new_canvas_input.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            app.new_canvas_input.pop();
+        }
+        KeyCode::Enter => {
+            // Parse active field
+            let default_dim = if app.new_canvas_cursor == 0 { app.canvas.width } else { app.canvas.height };
+            let buf_val = parse_canvas_input(&app.new_canvas_input, default_dim);
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = buf_val;
+            } else {
+                app.new_canvas_height = buf_val;
+            }
+            let w = app.new_canvas_width.clamp(MIN_DIMENSION, MAX_DIMENSION);
+            let h = app.new_canvas_height.clamp(MIN_DIMENSION, MAX_DIMENSION);
+            app.new_canvas_width = w;
+            app.new_canvas_height = h;
+
+            // Same size → no-op
+            if w == app.canvas.width && h == app.canvas.height {
+                app.mode = AppMode::Normal;
+                app.set_status_with_level("Same size — no resize needed", MessageLevel::Warning);
+                return;
+            }
+
+            // Shrinking → show crop warning
+            if w < app.canvas.width || h < app.canvas.height {
+                app.mode = AppMode::ResizeCropConfirm;
+                return;
+            }
+
+            // Enlarging → apply immediately
+            do_resize(app, w, h);
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_resize_crop_confirm(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let w = app.new_canvas_width;
+            let h = app.new_canvas_height;
+            do_resize(app, w, h);
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+            app.set_status("Resize cancelled");
+        }
+        _ => {}
+    }
+}
+
+/// Execute the resize with CanvasSnapshot for undo.
+fn do_resize(app: &mut App, w: usize, h: usize) {
+    // Step 1: capture old snapshot
+    let old_cells = app.canvas.cells();
+    let old_w = app.canvas.width;
+    let old_h = app.canvas.height;
+
+    // Step 2: resize
+    app.canvas.resize(w, h);
+
+    // Step 3: capture new snapshot
+    let new_cells = app.canvas.cells();
+    let new_w = app.canvas.width;
+    let new_h = app.canvas.height;
+
+    // Step 4: push to history
+    app.history.commit(Action::CanvasSnapshot {
+        old_cells, old_w, old_h,
+        new_cells, new_w, new_h,
+    });
+
+    // Step 5: reset viewport
+    app.viewport_x = 0;
+    app.viewport_y = 0;
+
+    app.dirty = true;
+    app.mode = AppMode::Normal;
+    app.set_status_with_level(&format!("Resized to {}x{}", new_w, new_h), MessageLevel::Success);
 }
 
 fn handle_hex_input(app: &mut App, key: KeyEvent) {
@@ -716,7 +933,7 @@ fn handle_hex_input(app: &mut App, key: KeyEvent) {
                     app.set_status(&format!("Color: {} → {}", rgb.name(), matched.name()));
                 }
                 None => {
-                    app.set_status("Invalid hex (use #RRGGBB)");
+                    app.set_status_with_level("Invalid hex (use #RRGGBB)", MessageLevel::Error);
                 }
             }
         }
@@ -845,6 +1062,222 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, canvas_area: &CanvasArea) {
     }
 }
 
+/// Image file extensions accepted by the import browser.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp"];
+
+/// Check if a filename has an image extension.
+fn is_image_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(&format!(".{}", ext)))
+}
+
+/// List image files and directories in a given directory.
+fn list_import_entries(dir: &std::path::Path) -> Vec<String> {
+    let mut entries = Vec::new();
+
+    // Add parent directory navigation (unless at root)
+    if dir.parent().is_some() {
+        entries.push("..".to_string());
+    }
+
+    if let Ok(read_dir) = std::fs::read_dir(dir) {
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                // Skip hidden files
+                if name.starts_with('.') {
+                    continue;
+                }
+                if path.is_dir() {
+                    dirs.push(format!("{}/", name));
+                } else if is_image_file(name) {
+                    files.push(name.to_string());
+                }
+            }
+        }
+        dirs.sort();
+        files.sort();
+        entries.extend(dirs);
+        entries.extend(files);
+    }
+
+    entries
+}
+
+/// Open the import file browser dialog.
+fn open_import_dialog(app: &mut App) {
+    let entries = list_import_entries(&app.import_dir);
+    app.file_dialog_files = entries;
+    app.file_dialog_selected = 0;
+    if app.file_dialog_files.is_empty() {
+        app.set_status_with_level("No image files found", MessageLevel::Warning);
+    } else {
+        app.mode = AppMode::ImportBrowse;
+    }
+}
+
+fn handle_import_browse(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Up => {
+            if app.file_dialog_selected > 0 {
+                app.file_dialog_selected -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.file_dialog_selected + 1 < app.file_dialog_files.len() {
+                app.file_dialog_selected += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(entry) = app.file_dialog_files.get(app.file_dialog_selected).cloned() {
+                if entry == ".." {
+                    // Navigate to parent directory
+                    if let Some(parent) = app.import_dir.parent() {
+                        app.import_dir = parent.to_path_buf();
+                    }
+                    app.file_dialog_files = list_import_entries(&app.import_dir);
+                    app.file_dialog_selected = 0;
+                } else if entry.ends_with('/') {
+                    // Navigate into directory
+                    let dir_name = &entry[..entry.len() - 1];
+                    app.import_dir = app.import_dir.join(dir_name);
+                    app.file_dialog_files = list_import_entries(&app.import_dir);
+                    app.file_dialog_selected = 0;
+                } else {
+                    // Image file selected — store path and go to options
+                    let full_path = app.import_dir.join(&entry);
+                    app.import_path = Some(full_path);
+                    app.import_options_cursor = 0;
+                    app.mode = AppMode::ImportOptions;
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_import_options(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Up => {
+            if app.import_options_cursor > 0 {
+                app.import_options_cursor -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.import_options_cursor < 2 {
+                app.import_options_cursor += 1;
+            }
+        }
+        KeyCode::Left | KeyCode::Right => {
+            match app.import_options_cursor {
+                0 => app.import_fit = 1 - app.import_fit,
+                1 => app.import_color = 1 - app.import_color,
+                2 => app.import_charset = 1 - app.import_charset,
+                _ => {}
+            }
+        }
+        KeyCode::Enter => {
+            do_import(app);
+        }
+        KeyCode::Esc => {
+            // Return to browse
+            app.mode = AppMode::ImportBrowse;
+        }
+        _ => {}
+    }
+}
+
+fn do_import(app: &mut App) {
+    use crate::import::{self, FitMode, ImportCharSet, ImportColorMode, ImportOptions as ImportOpts};
+
+    let path = match &app.import_path {
+        Some(p) => p.clone(),
+        None => {
+            app.set_status_with_level("No file selected", MessageLevel::Warning);
+            app.mode = AppMode::Normal;
+            return;
+        }
+    };
+
+    let fit_mode = if app.import_fit == 0 {
+        FitMode::FitToCanvas
+    } else {
+        FitMode::CustomSize(app.canvas.width, app.canvas.height)
+    };
+
+    let color_mode = if app.import_color == 0 {
+        ImportColorMode::Color256
+    } else {
+        ImportColorMode::Color16
+    };
+
+    let char_set = if app.import_charset == 0 {
+        ImportCharSet::FullBlocks
+    } else {
+        ImportCharSet::HalfBlocks
+    };
+
+    let opts = ImportOpts {
+        fit_mode,
+        color_mode,
+        char_set,
+    };
+
+    let target_w = app.canvas.width;
+    let target_h = app.canvas.height;
+
+    match import::import_image(&path, target_w, target_h, &opts) {
+        Ok(cells) => {
+            // Snapshot for undo
+            let old_cells = app.canvas.cells();
+            let old_w = app.canvas.width;
+            let old_h = app.canvas.height;
+
+            // Apply imported cells to canvas (clamped to canvas bounds)
+            for (y, row) in cells.iter().take(app.canvas.height).enumerate() {
+                for (x, cell) in row.iter().take(app.canvas.width).enumerate() {
+                    app.canvas.set(x, y, *cell);
+                }
+            }
+
+            let new_cells = app.canvas.cells();
+            let new_w = app.canvas.width;
+            let new_h = app.canvas.height;
+
+            app.history.commit(Action::CanvasSnapshot {
+                old_cells, old_w, old_h,
+                new_cells, new_w, new_h,
+            });
+
+            app.dirty = true;
+            app.mode = AppMode::Normal;
+            app.viewport_x = 0;
+            app.viewport_y = 0;
+
+            // Check if GIF via extension
+            let is_gif = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("gif"))
+                .unwrap_or(false);
+            if is_gif {
+                app.set_status_with_level("Imported (GIF: first frame only)", MessageLevel::Success);
+            } else {
+                app.set_status_with_level("Image imported", MessageLevel::Success);
+            }
+        }
+        Err(e) => {
+            app.set_status_with_level(&format!("Import failed: {}", e), MessageLevel::Error);
+            app.mode = AppMode::Normal;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -888,5 +1321,352 @@ mod tests {
         // With viewport at (10, 5), the first screen cell maps to canvas (10, 5)
         assert_eq!(a.screen_to_canvas(10, 5, 1, 10, 5), Some((10, 5)));
         assert_eq!(a.screen_to_canvas(14, 8, 1, 10, 5), Some((14, 8)));
+    }
+
+    // --- Cycle 16: NewCanvas free-text input tests ---
+
+    #[test]
+    fn test_new_canvas_digit_input() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = String::new();
+
+        handle_new_canvas(&mut app, KeyCode::Char('5'));
+        handle_new_canvas(&mut app, KeyCode::Char('0'));
+        assert_eq!(app.new_canvas_input, "50");
+    }
+
+    #[test]
+    fn test_new_canvas_backspace() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = "50".to_string();
+
+        handle_new_canvas(&mut app, KeyCode::Backspace);
+        assert_eq!(app.new_canvas_input, "5");
+        handle_new_canvas(&mut app, KeyCode::Backspace);
+        assert_eq!(app.new_canvas_input, "");
+    }
+
+    #[test]
+    fn test_new_canvas_clamp_min() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = "3".to_string();
+
+        handle_new_canvas(&mut app, KeyCode::Enter);
+        // Should create canvas with width clamped to MIN_DIMENSION (8)
+        assert_eq!(app.canvas.width, crate::canvas::MIN_DIMENSION);
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_new_canvas_clamp_max() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = "200".to_string();
+        app.new_canvas_height = 32;
+
+        handle_new_canvas(&mut app, KeyCode::Enter);
+        // Should create canvas with width clamped to MAX_DIMENSION (128)
+        assert_eq!(app.canvas.width, crate::canvas::MAX_DIMENSION);
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_new_canvas_arrow_increment() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_width = 48;
+        app.new_canvas_input = "48".to_string();
+
+        handle_new_canvas(&mut app, KeyCode::Right);
+        assert_eq!(app.new_canvas_input, "49");
+        assert_eq!(app.new_canvas_width, 49);
+
+        handle_new_canvas(&mut app, KeyCode::Left);
+        assert_eq!(app.new_canvas_input, "48");
+        assert_eq!(app.new_canvas_width, 48);
+    }
+
+    #[test]
+    fn test_new_canvas_tab_switch() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_width = 48;
+        app.new_canvas_height = 32;
+        app.new_canvas_input = "48".to_string();
+
+        handle_new_canvas(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_canvas_cursor, 1);
+        assert_eq!(app.new_canvas_input, "32"); // loaded height
+        assert_eq!(app.new_canvas_width, 48); // width stored
+    }
+
+    #[test]
+    fn test_new_canvas_empty_input() {
+        let mut app = App::new();
+        app.mode = AppMode::NewCanvas;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_width = 48;
+        app.new_canvas_height = 32;
+        app.new_canvas_input = String::new(); // empty
+
+        handle_new_canvas(&mut app, KeyCode::Enter);
+        // Empty input uses current width (48)
+        assert_eq!(app.canvas.width, 48);
+        assert_eq!(app.canvas.height, 32);
+    }
+
+    // --- Cycle 16: Resize Canvas tests ---
+
+    #[test]
+    fn test_resize_larger_preserves_content() {
+        let mut app = App::new();
+        // Place a cell
+        let cell = crate::cell::Cell {
+            ch: crate::cell::blocks::FULL,
+            fg: Some(crate::cell::Rgb { r: 205, g: 0, b: 0 }),
+            bg: None,
+        };
+        app.canvas.set(5, 5, cell);
+
+        // Resize larger via do_resize
+        app.new_canvas_width = 64;
+        app.new_canvas_height = 48;
+        do_resize(&mut app, 64, 48);
+
+        assert_eq!(app.canvas.width, 64);
+        assert_eq!(app.canvas.height, 48);
+        assert_eq!(app.canvas.get(5, 5), Some(cell));
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_resize_smaller_warns() {
+        let mut app = App::new();
+        app.mode = AppMode::ResizeCanvas;
+        app.new_canvas_width = 16;
+        app.new_canvas_height = 16;
+        app.new_canvas_input = "16".to_string();
+        app.new_canvas_cursor = 0;
+
+        // Enter on a shrink should go to crop confirm
+        handle_resize_canvas(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::ResizeCropConfirm);
+    }
+
+    #[test]
+    fn test_resize_undo_restore() {
+        let mut app = App::new();
+        let cell = crate::cell::Cell {
+            ch: crate::cell::blocks::FULL,
+            fg: Some(crate::cell::Rgb { r: 205, g: 0, b: 0 }),
+            bg: None,
+        };
+        app.canvas.set(10, 10, cell);
+        let orig_w = app.canvas.width;
+        let orig_h = app.canvas.height;
+
+        // Resize
+        do_resize(&mut app, 64, 48);
+        assert_eq!(app.canvas.width, 64);
+
+        // Undo should restore original size and content
+        app.undo();
+        assert_eq!(app.canvas.width, orig_w);
+        assert_eq!(app.canvas.height, orig_h);
+        assert_eq!(app.canvas.get(10, 10), Some(cell));
+    }
+
+    #[test]
+    fn test_resize_viewport_reset() {
+        let mut app = App::new();
+        app.viewport_x = 10;
+        app.viewport_y = 5;
+
+        do_resize(&mut app, 64, 48);
+        assert_eq!(app.viewport_x, 0);
+        assert_eq!(app.viewport_y, 0);
+    }
+
+    // --- Import browse tests ---
+
+    #[test]
+    fn test_import_browse_opens() {
+        let mut app = App::new();
+        assert_eq!(app.mode, AppMode::Normal);
+
+        // Simulate Ctrl+I
+        handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL)),
+            &area(),
+        );
+
+        // Should be in ImportBrowse or show status (depends on files in cwd)
+        assert!(
+            app.mode == AppMode::ImportBrowse
+                || app.status_message.is_some(),
+            "Ctrl+I should open import dialog or show status"
+        );
+    }
+
+    #[test]
+    fn test_import_browse_filter() {
+        // list_import_entries should only return image files and directories
+        let dir = std::env::temp_dir().join("kakukuma_test_browse_filter");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create test files
+        std::fs::write(dir.join("photo.png"), b"fake").unwrap();
+        std::fs::write(dir.join("pic.jpg"), b"fake").unwrap();
+        std::fs::write(dir.join("data.txt"), b"fake").unwrap();
+        std::fs::write(dir.join("notes.md"), b"fake").unwrap();
+        std::fs::write(dir.join("image.gif"), b"fake").unwrap();
+
+        let entries = list_import_entries(&dir);
+
+        // Should contain image files but not .txt or .md
+        assert!(entries.iter().any(|e| e == "photo.png"));
+        assert!(entries.iter().any(|e| e == "pic.jpg"));
+        assert!(entries.iter().any(|e| e == "image.gif"));
+        assert!(!entries.iter().any(|e| e == "data.txt"));
+        assert!(!entries.iter().any(|e| e == "notes.md"));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_import_browse_stores_path() {
+        let dir = std::env::temp_dir().join("kakukuma_test_browse_select");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("test.png"), b"fake").unwrap();
+
+        let mut app = App::new();
+        app.import_dir = dir.clone();
+        app.file_dialog_files = list_import_entries(&dir);
+        app.mode = AppMode::ImportBrowse;
+
+        // Find the index of test.png
+        let png_idx = app.file_dialog_files.iter().position(|e| e == "test.png");
+        assert!(png_idx.is_some(), "test.png should be in file list");
+        app.file_dialog_selected = png_idx.unwrap();
+
+        // Press Enter to select
+        handle_import_browse(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.mode, AppMode::ImportOptions);
+        assert!(app.import_path.is_some());
+        let path = app.import_path.unwrap();
+        assert!(path.to_string_lossy().contains("test.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- Import options tests ---
+
+    #[test]
+    fn test_import_options_navigation() {
+        let mut app = App::new();
+        app.mode = AppMode::ImportOptions;
+        app.import_options_cursor = 0;
+
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 1);
+
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 2);
+
+        // Can't go past 2
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 2);
+
+        handle_import_options(&mut app, KeyCode::Up);
+        assert_eq!(app.import_options_cursor, 1);
+
+        // Toggle color mode
+        assert_eq!(app.import_color, 0);
+        handle_import_options(&mut app, KeyCode::Right);
+        assert_eq!(app.import_color, 1);
+        handle_import_options(&mut app, KeyCode::Left);
+        assert_eq!(app.import_color, 0);
+    }
+
+    #[test]
+    fn test_import_applies_to_canvas() {
+        let dir = std::env::temp_dir().join("kakukuma_test_import_apply");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img_path = dir.join("red_8x8.png");
+
+        // Create an 8x8 red image matching minimum canvas size
+        let mut img = image::RgbaImage::new(8, 8);
+        for x in 0..8u32 {
+            for y in 0..8u32 {
+                img.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
+            }
+        }
+        img.save(&img_path).unwrap();
+
+        let mut app = App::new();
+        // Use 8x8 canvas so image fills exactly (no letterbox)
+        app.canvas = Canvas::new_with_size(8, 8);
+        app.import_path = Some(img_path.clone());
+        app.import_charset = 0; // FullBlocks
+        app.import_color = 0;   // 256 color
+        app.import_fit = 0;     // FitToCanvas
+
+        do_import(&mut app);
+
+        assert_eq!(app.mode, AppMode::Normal);
+        // Cell (0,0) should have bg color (from the red image)
+        let cell = app.canvas.get(0, 0).unwrap();
+        assert!(cell.bg.is_some(), "Canvas cell should have imported color");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_import_undo() {
+        let dir = std::env::temp_dir().join("kakukuma_test_import_undo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img_path = dir.join("blue_8x8.png");
+
+        let mut img = image::RgbaImage::new(8, 8);
+        for x in 0..8u32 {
+            for y in 0..8u32 {
+                img.put_pixel(x, y, image::Rgba([0, 0, 255, 255]));
+            }
+        }
+        img.save(&img_path).unwrap();
+
+        let mut app = App::new();
+        // Use 8x8 canvas so image fills exactly
+        app.canvas = Canvas::new_with_size(8, 8);
+        let orig_cell = app.canvas.get(0, 0).unwrap();
+
+        app.import_path = Some(img_path.clone());
+        app.import_charset = 0;
+        app.import_color = 0;
+        app.import_fit = 0;
+        do_import(&mut app);
+
+        // Canvas should be modified
+        let imported_cell = app.canvas.get(0, 0).unwrap();
+        assert!(imported_cell.bg.is_some());
+
+        // Undo should restore
+        app.undo();
+        let restored_cell = app.canvas.get(0, 0).unwrap();
+        assert_eq!(restored_cell, orig_cell, "Undo should restore original canvas");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

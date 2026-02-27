@@ -337,6 +337,11 @@ pub struct Cell {
 }
 
 impl Cell {
+    /// Canonical empty cell: space with no colors (transparent).
+    pub fn empty() -> Self {
+        Cell { ch: ' ', fg: None, bg: None }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ch == ' '
     }

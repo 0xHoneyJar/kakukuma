@@ -10,6 +10,43 @@ use crate::input::CanvasArea;
 use crate::theme::Theme;
 use crate::tools::{self, ToolState};
 
+/// Direction of a symmetry axis at a given cell position.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AxisDirection {
+    Vertical,    // │ — vertical line (horizontal symmetry mirrors left/right)
+    Horizontal,  // ─ — horizontal line (vertical symmetry mirrors top/bottom)
+    Intersection, // ┼ — quad symmetry intersection
+}
+
+/// Return axis glyph, fg, and bg for a cell on a symmetry axis.
+/// - Empty cells: axis glyph with `theme.accent` fg and `theme.panel_bg` bg
+/// - Occupied cells: keep glyph, tint fg to `theme.dim`
+fn render_axis_cell(
+    ch: char,
+    _fg: Color,
+    bg: Color,
+    direction: AxisDirection,
+    theme: &Theme,
+    is_empty: bool,
+) -> (char, Color, Color) {
+    let glyph = match direction {
+        AxisDirection::Vertical => '\u{2502}',     // │
+        AxisDirection::Horizontal => '\u{2500}',   // ─
+        AxisDirection::Intersection => '\u{253C}',  // ┼
+    };
+
+    if is_empty {
+        // Empty cell: show axis glyph with accent color
+        (glyph, theme.accent, theme.panel_bg)
+    } else if ch == ' ' {
+        // Background-only cell: show axis glyph, preserve existing bg
+        (glyph, theme.accent, bg)
+    } else {
+        // Occupied cell: keep glyph, tint fg
+        (ch, theme.dim, bg)
+    }
+}
+
 /// Return the visual background color for an empty/transparent cell position.
 fn grid_bg(x: usize, y: usize, show_grid: bool, theme: &Theme) -> Color {
     if show_grid {
@@ -213,7 +250,7 @@ impl<'a> Widget for CanvasWidget<'a> {
                 };
 
                 // Resolve to (char, fg, bg) using unified path
-                let (ch_out, mut fg, mut bg) = if render_cell.ch == blocks::FULL {
+                let (mut ch_out, mut fg, mut bg) = if render_cell.ch == blocks::FULL {
                     let c = render_cell.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
                     ('\u{2588}', c, c)
                 } else if render_cell.is_empty() {
@@ -226,17 +263,28 @@ impl<'a> Widget for CanvasWidget<'a> {
                     (render_cell.ch, fg_color, grid_bg(x, y, show_grid, theme))
                 };
 
-                // Symmetry axis highlight
+                // Symmetry axis visualization
                 let canvas_w = self.app.canvas.width;
                 let canvas_h = self.app.canvas.height;
-                let on_h_axis = self.app.symmetry.has_horizontal()
-                    && (x == canvas_w / 2 - 1 || x == canvas_w / 2);
-                let on_v_axis = self.app.symmetry.has_vertical()
-                    && (y == canvas_h / 2 - 1 || y == canvas_h / 2);
-                if (on_h_axis || on_v_axis) && !is_cursor
-                    && render_cell.is_empty()
-                {
-                    bg = Color::Indexed(238);
+                let mid_x = canvas_w / 2;
+                let mid_y = canvas_h / 2;
+                let on_v_line = self.app.symmetry.has_horizontal()
+                    && (x == mid_x.saturating_sub(1) || x == mid_x);
+                let on_h_line = self.app.symmetry.has_vertical()
+                    && (y == mid_y.saturating_sub(1) || y == mid_y);
+                if (on_v_line || on_h_line) && !is_cursor {
+                    let direction = match (on_v_line, on_h_line) {
+                        (true, true) => AxisDirection::Intersection,
+                        (true, false) => AxisDirection::Vertical,
+                        (false, true) => AxisDirection::Horizontal,
+                        _ => unreachable!(),
+                    };
+                    let result = render_axis_cell(
+                        ch_out, fg, bg, direction, theme, render_cell.is_empty(),
+                    );
+                    ch_out = result.0;
+                    fg = result.1;
+                    bg = result.2;
                 }
 
                 // Cursor inversion
@@ -382,5 +430,43 @@ mod tests {
         assert_eq!(ch, '▌');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Indexed(4));
+    }
+
+    // --- render_axis_cell tests ---
+
+    #[test]
+    fn test_axis_empty_cell() {
+        // Empty cell on vertical axis → │ glyph with accent fg, panel_bg bg
+        let (ch, fg, bg) = render_axis_cell(' ', Color::Reset, Color::Reset, AxisDirection::Vertical, &WARM, true);
+        assert_eq!(ch, '│');
+        assert_eq!(fg, WARM.accent);
+        assert_eq!(bg, WARM.panel_bg);
+    }
+
+    #[test]
+    fn test_axis_occupied_cell() {
+        // Occupied cell (has visible glyph) → keep glyph, tint fg to dim
+        let (ch, fg, bg) = render_axis_cell('█', Color::Indexed(1), Color::Indexed(4), AxisDirection::Vertical, &WARM, false);
+        assert_eq!(ch, '█', "Should preserve original glyph");
+        assert_eq!(fg, WARM.dim, "Should tint fg to dim");
+        assert_eq!(bg, Color::Indexed(4), "Should preserve bg");
+    }
+
+    #[test]
+    fn test_axis_bg_only_cell() {
+        // Space char with bg color → show axis glyph, preserve bg
+        let (ch, fg, bg) = render_axis_cell(' ', Color::Reset, Color::Indexed(4), AxisDirection::Horizontal, &WARM, false);
+        assert_eq!(ch, '─', "Should show horizontal axis glyph");
+        assert_eq!(fg, WARM.accent, "Should use accent fg");
+        assert_eq!(bg, Color::Indexed(4), "Should preserve existing bg");
+    }
+
+    #[test]
+    fn test_axis_quad_intersection() {
+        // Intersection of both axes → ┼ character
+        let (ch, fg, bg) = render_axis_cell(' ', Color::Reset, Color::Reset, AxisDirection::Intersection, &WARM, true);
+        assert_eq!(ch, '┼');
+        assert_eq!(fg, WARM.accent);
+        assert_eq!(bg, WARM.panel_bg);
     }
 }
