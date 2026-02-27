@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["TextInputPurpose"],"fn":["handle_color_sliders","handle_event","handle_export_dialog","handle_file_dialog","handle_key","handle_mouse","handle_new_canvas","handle_palette_dialog","handle_text_input"],"struct":["CanvasArea"]};

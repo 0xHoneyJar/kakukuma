@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_HEIGHT","DEFAULT_WIDTH","MAX_DIMENSION","MIN_DIMENSION"],"fn":["default_height","default_width"],"struct":["Canvas"]};

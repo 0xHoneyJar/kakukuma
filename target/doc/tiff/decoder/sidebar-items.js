@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ChunkType","DecodingBuffer","DecodingResult"],"mod":["ifd"],"struct":["BufferLayoutPreference","Decoder","IfdDecoder","Limits"]};

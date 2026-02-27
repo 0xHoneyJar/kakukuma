@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["SymmetryMode"],"fn":["apply_symmetry"]};

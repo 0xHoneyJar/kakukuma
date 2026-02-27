@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["COLS"],"fn":["color_lines","first_section_index","info_lines","render_color_row","section_header_line","section_lines"]};

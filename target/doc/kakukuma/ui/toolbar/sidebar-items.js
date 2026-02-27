@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["block_lines","symmetry_lines","tool_lines"]};

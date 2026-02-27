@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_PALETTE"],"enum":["PaletteItem","PaletteSection"],"fn":["build_hue_groups","hsl_to_rgb","list_palette_files","load_palette","nearest_color","rgb_hue","rgb_to_hsl","save_palette"],"struct":["CustomPalette","HueGroup"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ANSI_16_RGB"],"enum":["BlockChar"],"struct":["Cell","Color256"]};
