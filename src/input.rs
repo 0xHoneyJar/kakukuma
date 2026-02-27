@@ -354,6 +354,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 match item {
                     PaletteItem::SectionHeader(section) => {
                         match section {
+                            PaletteSection::Recent => {
+                                app.palette_sections.recent_expanded = !app.palette_sections.recent_expanded;
+                            }
                             PaletteSection::Standard => {
                                 app.palette_sections.standard_expanded = !app.palette_sections.standard_expanded;
                             }

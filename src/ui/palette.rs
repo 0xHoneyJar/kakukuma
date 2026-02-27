@@ -56,9 +56,11 @@ fn render_color_row(
 }
 
 /// Render a collapsible section header line.
-fn section_header_line(section: PaletteSection, expanded: bool, is_cursor: bool, theme: &Theme) -> Line<'static> {
+/// `count_hint` overrides the displayed count for dynamic sections (Recent).
+fn section_header_line(section: PaletteSection, expanded: bool, is_cursor: bool, theme: &Theme, count_hint: usize) -> Line<'static> {
     let indicator = if expanded { "\u{25BE}" } else { "\u{25B8}" }; // ▾ or ▸
     let (name, count) = match section {
+        PaletteSection::Recent => ("Recent", count_hint),
         PaletteSection::Standard => ("Standard", 16),
         PaletteSection::HueGroups => ("Hue Groups", 216),
         PaletteSection::Grayscale => ("Grayscale", 24),
@@ -135,12 +137,20 @@ pub fn section_lines(app: &App) -> Vec<Line<'static>> {
             }
             PaletteItem::SectionHeader(section) => {
                 let expanded = match section {
+                    PaletteSection::Recent => app.palette_sections.recent_expanded,
                     PaletteSection::Standard => app.palette_sections.standard_expanded,
                     PaletteSection::HueGroups => app.palette_sections.hue_expanded,
                     PaletteSection::Grayscale => app.palette_sections.grayscale_expanded,
                 };
+                // Count colors following this header (for dynamic count display)
+                let count_hint = match section {
+                    PaletteSection::Recent => app.recent_colors.len(),
+                    PaletteSection::Standard => 16,
+                    PaletteSection::HueGroups => 216,
+                    PaletteSection::Grayscale => 24,
+                };
                 let is_cursor = i == app.palette_cursor;
-                all_lines.push(section_header_line(section, expanded, is_cursor, theme));
+                all_lines.push(section_header_line(section, expanded, is_cursor, theme, count_hint));
                 i += 1;
             }
         }
@@ -183,4 +193,62 @@ pub fn info_lines(app: &App) -> Vec<Line<'static>> {
         center_line("[C]ustom", dim),
         center_line("[A]dd color", dim),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::cell::Rgb;
+
+    fn lines_text(lines: &[Line]) -> String {
+        lines.iter().map(|l| {
+            l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+        }).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn test_recent_section_renders() {
+        let mut app = App::new();
+        let red = Rgb::new(255, 0, 0);
+        app.recent_colors.push(red);
+        app.rebuild_palette_layout();
+        let lines = section_lines(&app);
+        let text = lines_text(&lines);
+        assert!(text.contains("Recent"), "Section lines should contain Recent header, got: {}", text);
+    }
+
+    #[test]
+    fn test_recent_section_collapsible() {
+        let mut app = App::new();
+        let red = Rgb::new(255, 0, 0);
+        app.recent_colors.push(red);
+        app.rebuild_palette_layout();
+
+        // Expanded by default — should have color swatches after header
+        let lines_expanded = section_lines(&app);
+        let expanded_count = lines_expanded.len();
+
+        // Collapse the Recent section
+        app.palette_sections.recent_expanded = false;
+        app.rebuild_palette_layout();
+        let lines_collapsed = section_lines(&app);
+        let collapsed_count = lines_collapsed.len();
+
+        // Collapsed should have fewer lines (header only, no swatches)
+        assert!(collapsed_count < expanded_count,
+            "Collapsed ({}) should have fewer lines than expanded ({})", collapsed_count, expanded_count);
+
+        // Both should still show "Recent" header
+        let text = lines_text(&lines_collapsed);
+        assert!(text.contains("Recent"), "Collapsed section should still show Recent header");
+    }
+
+    #[test]
+    fn test_recent_section_empty_not_rendered() {
+        let app = App::new();
+        let lines = section_lines(&app);
+        let text = lines_text(&lines);
+        assert!(!text.contains("Recent"), "Empty recent should not render, got: {}", text);
+    }
 }

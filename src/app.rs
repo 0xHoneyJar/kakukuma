@@ -40,6 +40,7 @@ pub struct StatusMessage {
 }
 
 pub struct PaletteSectionState {
+    pub recent_expanded: bool,
     pub standard_expanded: bool,
     pub hue_expanded: bool,
     pub grayscale_expanded: bool,
@@ -166,6 +167,7 @@ impl App {
             palette_dialog_selected: 0,
             active_block: blocks::FULL,
             palette_sections: PaletteSectionState {
+                recent_expanded: true,
                 standard_expanded: false,
                 hue_expanded: false,
                 grayscale_expanded: false,
@@ -200,7 +202,7 @@ impl App {
     pub fn rebuild_palette_layout(&mut self) {
         let mut layout = Vec::new();
 
-        // Curated palette (or custom palette) always at top
+        // Curated palette (or custom palette) always at top (shown by color_lines)
         if let Some(ref cp) = self.custom_palette {
             for &idx in &cp.colors {
                 layout.push(PaletteItem::Color(idx));
@@ -208,6 +210,16 @@ impl App {
         } else {
             for &idx in &palette::DEFAULT_PALETTE {
                 layout.push(PaletteItem::Color(idx));
+            }
+        }
+
+        // Recent colors section (only when non-empty, appears above Standard)
+        if !self.recent_colors.is_empty() {
+            layout.push(PaletteItem::SectionHeader(PaletteSection::Recent));
+            if self.palette_sections.recent_expanded {
+                for &c in &self.recent_colors {
+                    layout.push(PaletteItem::Color(c));
+                }
             }
         }
 
@@ -375,6 +387,8 @@ impl App {
         self.recent_colors.insert(0, color);
         // Cap at 8
         self.recent_colors.truncate(8);
+        // Rebuild palette layout to reflect updated recent section
+        self.rebuild_palette_layout();
     }
 
     /// Apply a tool action at (x, y), handling symmetry and history.
@@ -891,5 +905,67 @@ mod tests {
         assert_eq!(app.zoom, 4);
         app.cycle_zoom();
         assert_eq!(app.zoom, 1);
+    }
+
+    #[test]
+    fn test_recent_colors_tracking() {
+        let mut app = App::new();
+        let red = Rgb::new(255, 0, 0);
+        app.track_recent_color(red);
+        assert_eq!(app.recent_colors.len(), 1);
+        assert_eq!(app.recent_colors[0], red);
+    }
+
+    #[test]
+    fn test_recent_colors_dedup() {
+        let mut app = App::new();
+        let red = Rgb::new(255, 0, 0);
+        let blue = Rgb::new(0, 0, 255);
+        app.track_recent_color(red);
+        app.track_recent_color(blue);
+        app.track_recent_color(red); // Re-add red — should move to front
+        assert_eq!(app.recent_colors.len(), 2);
+        assert_eq!(app.recent_colors[0], red);
+        assert_eq!(app.recent_colors[1], blue);
+    }
+
+    #[test]
+    fn test_recent_colors_max() {
+        let mut app = App::new();
+        for i in 0..10u8 {
+            app.track_recent_color(Rgb::new(i * 25, 0, 0));
+        }
+        assert_eq!(app.recent_colors.len(), 8);
+        // Most recent should be first
+        assert_eq!(app.recent_colors[0], Rgb::new(225, 0, 0));
+    }
+
+    #[test]
+    fn test_recent_colors_palette_layout() {
+        let mut app = App::new();
+        // Initially no Recent section
+        assert!(!app.palette_layout.iter().any(|item| matches!(item, PaletteItem::SectionHeader(PaletteSection::Recent))));
+
+        // Add a color
+        let red = Rgb::new(255, 0, 0);
+        app.track_recent_color(red);
+        // Now Recent section should appear
+        assert!(app.palette_layout.iter().any(|item| matches!(item, PaletteItem::SectionHeader(PaletteSection::Recent))));
+        // Recent section should be the first SectionHeader (after curated colors)
+        let first_header = app.palette_layout.iter().position(|item| matches!(item, PaletteItem::SectionHeader(_))).unwrap();
+        assert!(matches!(app.palette_layout[first_header], PaletteItem::SectionHeader(PaletteSection::Recent)));
+        // Color should follow the Recent header
+        assert!(matches!(app.palette_layout[first_header + 1], PaletteItem::Color(c) if c == red));
+    }
+
+    #[test]
+    fn test_recent_colors_empty_no_section() {
+        let app = App::new();
+        // No recent colors means no Recent section header
+        for item in &app.palette_layout {
+            if let PaletteItem::SectionHeader(section) = item {
+                assert_ne!(*section, PaletteSection::Recent);
+            }
+        }
     }
 }
