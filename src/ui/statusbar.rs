@@ -4,7 +4,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::App;
+use crate::app::{App, MessageLevel};
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
@@ -12,9 +12,15 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     // Status message takes priority
     if let Some(ref msg) = app.status_message {
+        let fg = match msg.level {
+            MessageLevel::Info => theme.highlight,
+            MessageLevel::Success => theme.msg_success,
+            MessageLevel::Warning => theme.msg_warning,
+            MessageLevel::Error => theme.msg_error,
+        };
         spans.push(Span::styled(
             format!(" {} ", msg.text),
-            Style::default().fg(theme.highlight).bg(theme.panel_bg),
+            Style::default().fg(fg).bg(theme.panel_bg),
         ));
     } else {
         // Default shortcut hints — dim undo/redo when unavailable
@@ -110,9 +116,15 @@ pub fn build_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
 
     if let Some(ref msg) = app.status_message {
+        let fg = match msg.level {
+            MessageLevel::Info => theme.highlight,
+            MessageLevel::Success => theme.msg_success,
+            MessageLevel::Warning => theme.msg_warning,
+            MessageLevel::Error => theme.msg_error,
+        };
         spans.push(Span::styled(
             format!(" {} ", msg.text),
-            Style::default().fg(theme.highlight).bg(theme.panel_bg),
+            Style::default().fg(fg).bg(theme.panel_bg),
         ));
     } else {
         let undo_fg = if app.history.can_undo() { Color::White } else { theme.dim };
@@ -213,5 +225,35 @@ mod tests {
         let text = spans_text(&build_spans(&app));
         // Should have │ separators
         assert!(text.contains("\u{2502}"), "Status bar should contain │ separators, got: {}", text);
+    }
+
+    #[test]
+    fn test_status_message_color_mapping() {
+        let mut app = App::new();
+        // Copy color values to avoid borrow conflicts with mutable set_status calls
+        let success_color = app.theme().msg_success;
+        let warning_color = app.theme().msg_warning;
+        let error_color = app.theme().msg_error;
+        let highlight_color = app.theme().highlight;
+
+        // Success → msg_success color
+        app.set_status_with_level("ok", MessageLevel::Success);
+        let spans = build_spans(&app);
+        assert_eq!(spans[0].style.fg, Some(success_color));
+
+        // Warning → msg_warning color
+        app.set_status_with_level("warn", MessageLevel::Warning);
+        let spans = build_spans(&app);
+        assert_eq!(spans[0].style.fg, Some(warning_color));
+
+        // Error → msg_error color
+        app.set_status_with_level("err", MessageLevel::Error);
+        let spans = build_spans(&app);
+        assert_eq!(spans[0].style.fg, Some(error_color));
+
+        // Info → highlight color (default)
+        app.set_status("info");
+        let spans = build_spans(&app);
+        assert_eq!(spans[0].style.fg, Some(highlight_color));
     }
 }

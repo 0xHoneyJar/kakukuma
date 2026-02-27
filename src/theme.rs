@@ -11,6 +11,9 @@ pub struct Theme {
     pub panel_bg: Color,
     pub grid_even: Color,
     pub grid_odd: Color,
+    pub msg_success: Color,
+    pub msg_warning: Color,
+    pub msg_error: Color,
 }
 
 pub const THEMES: [Theme; 3] = [WARM, NEON, DARK];
@@ -26,6 +29,9 @@ pub const WARM: Theme = Theme {
     panel_bg: Color::Indexed(235),
     grid_even: Color::Indexed(235),
     grid_odd: Color::Indexed(234),
+    msg_success: Color::Indexed(34),
+    msg_warning: Color::Indexed(178),
+    msg_error: Color::Indexed(160),
 };
 
 pub const NEON: Theme = Theme {
@@ -39,6 +45,9 @@ pub const NEON: Theme = Theme {
     panel_bg: Color::Indexed(233),
     grid_even: Color::Indexed(234),
     grid_odd: Color::Indexed(233),
+    msg_success: Color::Indexed(46),
+    msg_warning: Color::Indexed(226),
+    msg_error: Color::Indexed(196),
 };
 
 pub const DARK: Theme = Theme {
@@ -52,6 +61,9 @@ pub const DARK: Theme = Theme {
     panel_bg: Color::Indexed(234),
     grid_even: Color::Indexed(236),
     grid_odd: Color::Indexed(235),
+    msg_success: Color::Indexed(35),
+    msg_warning: Color::Indexed(172),
+    msg_error: Color::Indexed(124),
 };
 
 #[cfg(test)]
@@ -81,5 +93,15 @@ mod tests {
         assert_eq!(WARM.panel_bg, Color::Indexed(235));
         assert_eq!(WARM.grid_even, Color::Indexed(235));
         assert_eq!(WARM.grid_odd, Color::Indexed(234));
+    }
+
+    #[test]
+    fn test_theme_message_colors() {
+        for theme in &THEMES {
+            // All message colors must be Color::Indexed (not Reset or other variants)
+            assert!(matches!(theme.msg_success, Color::Indexed(_)), "{} msg_success", theme.name);
+            assert!(matches!(theme.msg_warning, Color::Indexed(_)), "{} msg_warning", theme.name);
+            assert!(matches!(theme.msg_error, Color::Indexed(_)), "{} msg_error", theme.name);
+        }
     }
 }

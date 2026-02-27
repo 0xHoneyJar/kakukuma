@@ -1,6 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, MessageLevel};
 use crate::canvas::Canvas;
 use crate::history::{Action, History};
 use crate::palette::{PaletteItem, PaletteSection};
@@ -250,7 +250,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Char('c') => {
                 if app.dirty {
                     app.mode = AppMode::Quitting;
-                    app.set_status("Unsaved changes. Quit? (y/n)");
+                    app.set_status_with_level("Unsaved changes. Quit? (y/n)", MessageLevel::Warning);
                 } else {
                     app.running = false;
                 }
@@ -483,7 +483,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('q') | KeyCode::Char('Q') => {
             if app.dirty {
                 app.mode = AppMode::Quitting;
-                app.set_status("Unsaved changes. Quit? (y/n)");
+                app.set_status_with_level("Unsaved changes. Quit? (y/n)", MessageLevel::Warning);
             } else {
                 app.running = false;
             }
@@ -576,7 +576,7 @@ fn handle_text_input(app: &mut App, key: KeyEvent, purpose: TextInputPurpose) {
         KeyCode::Enter => {
             let input = app.text_input.clone();
             if input.trim().is_empty() {
-                app.set_status("Name cannot be empty");
+                app.set_status_with_level("Name cannot be empty", MessageLevel::Warning);
                 return;
             }
             match purpose {
@@ -793,9 +793,9 @@ fn handle_new_canvas(app: &mut App, code: KeyCode) {
             app.tool_state = ToolState::Idle;
             app.mode = AppMode::Normal;
             if clamped {
-                app.set_status(&format!("New canvas {}x{} (clamped to {}-{})", w, h, MIN_DIMENSION, MAX_DIMENSION));
+                app.set_status_with_level(&format!("New canvas {}x{} (clamped to {}-{})", w, h, MIN_DIMENSION, MAX_DIMENSION), MessageLevel::Warning);
             } else {
-                app.set_status(&format!("New canvas {}x{}", w, h));
+                app.set_status_with_level(&format!("New canvas {}x{}", w, h), MessageLevel::Success);
             }
         }
         KeyCode::Esc => {
@@ -857,7 +857,7 @@ fn handle_resize_canvas(app: &mut App, code: KeyCode) {
             // Same size → no-op
             if w == app.canvas.width && h == app.canvas.height {
                 app.mode = AppMode::Normal;
-                app.set_status("Same size — no resize needed");
+                app.set_status_with_level("Same size — no resize needed", MessageLevel::Warning);
                 return;
             }
 
@@ -919,7 +919,7 @@ fn do_resize(app: &mut App, w: usize, h: usize) {
 
     app.dirty = true;
     app.mode = AppMode::Normal;
-    app.set_status(&format!("Resized to {}x{}", new_w, new_h));
+    app.set_status_with_level(&format!("Resized to {}x{}", new_w, new_h), MessageLevel::Success);
 }
 
 fn handle_hex_input(app: &mut App, key: KeyEvent) {
@@ -933,7 +933,7 @@ fn handle_hex_input(app: &mut App, key: KeyEvent) {
                     app.set_status(&format!("Color: {} → {}", rgb.name(), matched.name()));
                 }
                 None => {
-                    app.set_status("Invalid hex (use #RRGGBB)");
+                    app.set_status_with_level("Invalid hex (use #RRGGBB)", MessageLevel::Error);
                 }
             }
         }
@@ -1112,7 +1112,7 @@ fn open_import_dialog(app: &mut App) {
     app.file_dialog_files = entries;
     app.file_dialog_selected = 0;
     if app.file_dialog_files.is_empty() {
-        app.set_status("No image files found");
+        app.set_status_with_level("No image files found", MessageLevel::Warning);
     } else {
         app.mode = AppMode::ImportBrowse;
     }
@@ -1198,7 +1198,7 @@ fn do_import(app: &mut App) {
     let path = match &app.import_path {
         Some(p) => p.clone(),
         None => {
-            app.set_status("No file selected");
+            app.set_status_with_level("No file selected", MessageLevel::Warning);
             app.mode = AppMode::Normal;
             return;
         }
@@ -1266,13 +1266,13 @@ fn do_import(app: &mut App) {
                 .map(|e| e.eq_ignore_ascii_case("gif"))
                 .unwrap_or(false);
             if is_gif {
-                app.set_status("Imported (GIF: first frame only)");
+                app.set_status_with_level("Imported (GIF: first frame only)", MessageLevel::Success);
             } else {
-                app.set_status("Image imported");
+                app.set_status_with_level("Image imported", MessageLevel::Success);
             }
         }
         Err(e) => {
-            app.set_status(&format!("Import failed: {}", e));
+            app.set_status_with_level(&format!("Import failed: {}", e), MessageLevel::Error);
             app.mode = AppMode::Normal;
         }
     }

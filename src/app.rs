@@ -34,8 +34,17 @@ pub enum AppMode {
     ImportOptions,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MessageLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
 pub struct StatusMessage {
     pub text: String,
+    pub level: MessageLevel,
     pub ticks_remaining: u16,
 }
 
@@ -316,8 +325,13 @@ impl App {
     }
 
     pub fn set_status(&mut self, msg: &str) {
+        self.set_status_with_level(msg, MessageLevel::Info);
+    }
+
+    pub fn set_status_with_level(&mut self, msg: &str, level: MessageLevel) {
         self.status_message = Some(StatusMessage {
             text: msg.to_string(),
+            level,
             ticks_remaining: 30, // ~3 seconds at 10 ticks/sec
         });
     }
@@ -528,12 +542,12 @@ impl App {
         if let Some(filename) = self.palette_dialog_files.get(self.palette_dialog_selected).cloned() {
             match palette::load_palette(Path::new(&filename)) {
                 Ok(cp) => {
-                    self.set_status(&format!("Loaded palette: {}", cp.name));
+                    self.set_status_with_level(&format!("Loaded palette: {}", cp.name), MessageLevel::Success);
                     self.custom_palette = Some(cp);
                     self.mode = AppMode::Normal;
                 }
                 Err(e) => {
-                    self.set_status(&format!("Load failed: {}", e));
+                    self.set_status_with_level(&format!("Load failed: {}", e), MessageLevel::Error);
                 }
             }
         }
@@ -544,7 +558,7 @@ impl App {
         if let Some(filename) = self.palette_dialog_files.get(self.palette_dialog_selected).cloned() {
             match std::fs::remove_file(&filename) {
                 Ok(()) => {
-                    self.set_status(&format!("Deleted: {}", filename));
+                    self.set_status_with_level(&format!("Deleted: {}", filename), MessageLevel::Success);
                     // If this was the loaded palette, unload it
                     if let Some(ref cp) = self.custom_palette {
                         let expected = format!("{}.palette", cp.name);
@@ -560,7 +574,7 @@ impl App {
                     }
                 }
                 Err(e) => {
-                    self.set_status(&format!("Delete failed: {}", e));
+                    self.set_status_with_level(&format!("Delete failed: {}", e), MessageLevel::Error);
                 }
             }
         }
@@ -571,7 +585,7 @@ impl App {
         if let Some(filename) = self.palette_dialog_files.get(self.palette_dialog_selected).cloned() {
             let new_filename = format!("{}.palette", new_name);
             if Path::new(&new_filename).exists() {
-                self.set_status("Palette already exists");
+                self.set_status_with_level("Palette already exists", MessageLevel::Warning);
                 return;
             }
             // Load, rename, save to new file, delete old
@@ -581,7 +595,7 @@ impl App {
                     match palette::save_palette(&cp, Path::new(&new_filename)) {
                         Ok(()) => {
                             let _ = std::fs::remove_file(&filename);
-                            self.set_status(&format!("Renamed to: {}", new_name));
+                            self.set_status_with_level(&format!("Renamed to: {}", new_name), MessageLevel::Success);
                             // Update loaded palette if it was the renamed one
                             if let Some(ref mut loaded) = self.custom_palette {
                                 let expected = filename.clone();
@@ -596,10 +610,10 @@ impl App {
                                 self.palette_dialog_files.len().saturating_sub(1),
                             );
                         }
-                        Err(e) => self.set_status(&format!("Rename failed: {}", e)),
+                        Err(e) => self.set_status_with_level(&format!("Rename failed: {}", e), MessageLevel::Error),
                     }
                 }
-                Err(e) => self.set_status(&format!("Rename failed: {}", e)),
+                Err(e) => self.set_status_with_level(&format!("Rename failed: {}", e), MessageLevel::Error),
             }
         }
         self.mode = AppMode::PaletteDialog;
@@ -614,14 +628,14 @@ impl App {
                     let new_filename = format!("{}.palette", cp.name);
                     match palette::save_palette(&cp, Path::new(&new_filename)) {
                         Ok(()) => {
-                            self.set_status(&format!("Duplicated: {}", cp.name));
+                            self.set_status_with_level(&format!("Duplicated: {}", cp.name), MessageLevel::Success);
                             let cwd = std::env::current_dir().unwrap_or_default();
                             self.palette_dialog_files = palette::list_palette_files(&cwd);
                         }
-                        Err(e) => self.set_status(&format!("Duplicate failed: {}", e)),
+                        Err(e) => self.set_status_with_level(&format!("Duplicate failed: {}", e), MessageLevel::Error),
                     }
                 }
-                Err(e) => self.set_status(&format!("Duplicate failed: {}", e)),
+                Err(e) => self.set_status_with_level(&format!("Duplicate failed: {}", e), MessageLevel::Error),
             }
         }
     }
@@ -631,10 +645,10 @@ impl App {
         if let Some(filename) = self.palette_dialog_files.get(self.palette_dialog_selected).cloned() {
             match std::fs::copy(&filename, dest) {
                 Ok(_) => {
-                    self.set_status(&format!("Exported to: {}", dest));
+                    self.set_status_with_level(&format!("Exported to: {}", dest), MessageLevel::Success);
                 }
                 Err(e) => {
-                    self.set_status(&format!("Export failed: {}", e));
+                    self.set_status_with_level(&format!("Export failed: {}", e), MessageLevel::Error);
                 }
             }
         }
@@ -650,12 +664,12 @@ impl App {
         let filename = format!("{}.palette", name);
         match palette::save_palette(&cp, Path::new(&filename)) {
             Ok(()) => {
-                self.set_status(&format!("Created palette: {}", name));
+                self.set_status_with_level(&format!("Created palette: {}", name), MessageLevel::Success);
                 self.custom_palette = Some(cp);
                 self.mode = AppMode::Normal;
             }
             Err(e) => {
-                self.set_status(&format!("Create failed: {}", e));
+                self.set_status_with_level(&format!("Create failed: {}", e), MessageLevel::Error);
                 self.mode = AppMode::Normal;
             }
         }
@@ -671,13 +685,13 @@ impl App {
                     let filename = format!("{}.palette", cp.name);
                     let _ = palette::save_palette(cp, Path::new(&filename));
                     let msg = format!("Added {} to {}", color.name(), cp.name);
-                    self.set_status(&msg);
+                    self.set_status_with_level(&msg, MessageLevel::Success);
                 } else {
-                    self.set_status("Color already in palette");
+                    self.set_status_with_level("Color already in palette", MessageLevel::Warning);
                 }
             }
             None => {
-                self.set_status("No palette loaded. Press C to open palettes.");
+                self.set_status_with_level("No palette loaded. Press C to open palettes.", MessageLevel::Warning);
             }
         }
     }
@@ -702,11 +716,11 @@ impl App {
                 // Delete autosave file if it exists
                 let autosave = format!("{}.autosave", path.display());
                 let _ = std::fs::remove_file(&autosave);
-                self.set_status("Saved!");
+                self.set_status_with_level("Saved!", MessageLevel::Success);
                 true
             }
             Err(e) => {
-                self.set_status(&format!("Save failed: {}", e));
+                self.set_status_with_level(&format!("Save failed: {}", e), MessageLevel::Error);
                 false
             }
         }
@@ -737,10 +751,10 @@ impl App {
                 self.dirty = false;
                 self.history = History::new();
                 self.auto_save_ticks = 0;
-                self.set_status(&format!("Opened: {}", filename));
+                self.set_status_with_level(&format!("Opened: {}", filename), MessageLevel::Success);
             }
             Err(e) => {
-                self.set_status(&format!("Load failed: {}", e));
+                self.set_status_with_level(&format!("Load failed: {}", e), MessageLevel::Error);
             }
         }
     }
@@ -751,7 +765,7 @@ impl App {
         self.file_dialog_files = crate::project::list_kaku_files(&cwd);
         self.file_dialog_selected = 0;
         if self.file_dialog_files.is_empty() {
-            self.set_status("No .kaku files found");
+            self.set_status_with_level("No .kaku files found", MessageLevel::Warning);
         } else {
             self.mode = AppMode::FileDialog;
         }
@@ -779,16 +793,16 @@ impl App {
             match arboard::Clipboard::new() {
                 Ok(mut clipboard) => match clipboard.set_text(&content) {
                     Ok(()) => {
-                        self.set_status("Copied to clipboard!");
+                        self.set_status_with_level("Copied to clipboard!", MessageLevel::Success);
                         self.mode = AppMode::Normal;
                     }
                     Err(e) => {
-                        self.set_status(&format!("Clipboard error: {}", e));
+                        self.set_status_with_level(&format!("Clipboard error: {}", e), MessageLevel::Error);
                         self.mode = AppMode::Normal;
                     }
                 },
                 Err(e) => {
-                    self.set_status(&format!("Clipboard unavailable: {}. Use File export.", e));
+                    self.set_status_with_level(&format!("Clipboard unavailable: {}. Use File export.", e), MessageLevel::Error);
                     self.mode = AppMode::Normal;
                 }
             }
@@ -812,8 +826,8 @@ impl App {
             export::to_ansi(&self.canvas, self.color_format())
         };
         match std::fs::write(filename, &content) {
-            Ok(()) => self.set_status(&format!("Exported to {}", filename)),
-            Err(e) => self.set_status(&format!("Export failed: {}", e)),
+            Ok(()) => self.set_status_with_level(&format!("Exported to {}", filename), MessageLevel::Success),
+            Err(e) => self.set_status_with_level(&format!("Export failed: {}", e), MessageLevel::Error),
         }
         self.mode = AppMode::Normal;
     }
@@ -873,10 +887,10 @@ impl App {
                         self.project_path = Some(real_path.to_string());
                     }
                     self.dirty = true; // Mark dirty so user knows to save properly
-                    self.set_status("Recovered from autosave");
+                    self.set_status_with_level("Recovered from autosave", MessageLevel::Success);
                 }
                 Err(e) => {
-                    self.set_status(&format!("Recovery failed: {}", e));
+                    self.set_status_with_level(&format!("Recovery failed: {}", e), MessageLevel::Error);
                 }
             }
         }
@@ -956,6 +970,31 @@ mod tests {
         assert!(matches!(app.palette_layout[first_header], PaletteItem::SectionHeader(PaletteSection::Recent)));
         // Color should follow the Recent header
         assert!(matches!(app.palette_layout[first_header + 1], PaletteItem::Color(c) if c == red));
+    }
+
+    #[test]
+    fn test_message_level_default() {
+        let mut app = App::new();
+        app.set_status("hello");
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, MessageLevel::Info);
+    }
+
+    #[test]
+    fn test_message_level_explicit() {
+        let mut app = App::new();
+        app.set_status_with_level("saved", MessageLevel::Success);
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, MessageLevel::Success);
+        assert_eq!(msg.text, "saved");
+
+        app.set_status_with_level("warning", MessageLevel::Warning);
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, MessageLevel::Warning);
+
+        app.set_status_with_level("error", MessageLevel::Error);
+        let msg = app.status_message.as_ref().unwrap();
+        assert_eq!(msg.level, MessageLevel::Error);
     }
 
     #[test]
