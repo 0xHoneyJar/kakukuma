@@ -12,8 +12,9 @@ use std::path::Path;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::canvas::Canvas;
-use crate::cell::{parse_hex_color, Rgb};
+use crate::cell::{parse_hex_color, Cell, Rgb};
 use crate::export::ColorFormat;
+use crate::import::{ImportOptions, FitMode, ImportColorMode};
 use crate::project::Project;
 use crate::symmetry::SymmetryMode;
 
@@ -143,6 +144,48 @@ pub enum Command {
         /// Show full mutation details
         #[arg(long)]
         full: bool,
+    },
+
+    /// Resize canvas dimensions
+    Resize {
+        /// Path to .kaku file
+        file: String,
+        /// New width (8-128)
+        #[arg(long)]
+        width: Option<usize>,
+        /// New height (8-128)
+        #[arg(long)]
+        height: Option<usize>,
+        /// Canvas size as WxH (e.g., 32x24)
+        #[arg(long, value_parser = parse_size)]
+        size: Option<(usize, usize)>,
+    },
+
+    /// Clear canvas (reset all cells to default)
+    Clear {
+        /// Path to .kaku file
+        file: String,
+        /// Clear only a region (x1,y1,x2,y2)
+        #[arg(long, value_parser = parse_region)]
+        region: Option<(usize, usize, usize, usize)>,
+    },
+
+    /// Import image file onto canvas
+    Import {
+        /// Path to image file (PNG, JPEG, etc.)
+        image: String,
+        /// Path to output .kaku file
+        #[arg(long)]
+        output: String,
+        /// Canvas width (8-128)
+        #[arg(long, default_value_t = 48)]
+        width: usize,
+        /// Canvas height (8-128)
+        #[arg(long, default_value_t = 32)]
+        height: usize,
+        /// Color quantization (256 or 16)
+        #[arg(long, default_value = "256")]
+        quantize: CliColorFormat,
     },
 
     /// Palette management
@@ -377,12 +420,20 @@ pub fn to_color_format(f: &CliColorFormat) -> ColorFormat {
 }
 
 fn cli_error(msg: &str) -> ! {
-    eprintln!("Error: {}", msg);
+    let json = serde_json::json!({
+        "error": msg,
+        "code": "USER_ERROR"
+    });
+    eprintln!("{}", json);
     std::process::exit(1)
 }
 
 fn internal_error(msg: &str) -> ! {
-    eprintln!("Internal error: {}", msg);
+    let json = serde_json::json!({
+        "error": msg,
+        "code": "INTERNAL_ERROR"
+    });
+    eprintln!("{}", json);
     std::process::exit(2)
 }
 
@@ -427,8 +478,150 @@ pub fn run(cmd: Command) -> io::Result<()> {
         Command::Export { file, output, format, color_format } => {
             preview::export_to_file(&file, &output, &format, &color_format)
         }
+        Command::Resize { file, width, height, size } => {
+            cmd_resize(&file, width, height, size)
+        }
+        Command::Clear { file, region } => cmd_clear(&file, region),
+        Command::Import { image, output, width, height, quantize } => {
+            cmd_import(&image, &output, width, height, &quantize)
+        }
         Command::Palette { action } => palette_cmd::run(action),
     }
+}
+
+fn cmd_resize(
+    file: &str,
+    width: Option<usize>,
+    height: Option<usize>,
+    size: Option<(usize, usize)>,
+) -> io::Result<()> {
+    let path = Path::new(file);
+    let mut project = load_project(file);
+
+    let (new_w, new_h) = match size {
+        Some((w, h)) => (w, h),
+        None => {
+            let w = width.unwrap_or(project.canvas.width);
+            let h = height.unwrap_or(project.canvas.height);
+            (w, h)
+        }
+    };
+
+    let old_w = project.canvas.width;
+    let old_h = project.canvas.height;
+    project.canvas.resize(new_w, new_h);
+    atomic_save(&mut project, path)?;
+
+    let json = serde_json::json!({
+        "resized": file,
+        "old_width": old_w,
+        "old_height": old_h,
+        "new_width": project.canvas.width,
+        "new_height": project.canvas.height,
+    });
+    println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
+}
+
+fn cmd_clear(file: &str, region: Option<(usize, usize, usize, usize)>) -> io::Result<()> {
+    let path = Path::new(file);
+    let mut project = load_project(file);
+
+    let cleared = match region {
+        Some((x1, y1, x2, y2)) => {
+            let mut count = 0;
+            for y in y1..=y2.min(project.canvas.height.saturating_sub(1)) {
+                for x in x1..=x2.min(project.canvas.width.saturating_sub(1)) {
+                    project.canvas.set(x, y, Cell::default());
+                    count += 1;
+                }
+            }
+            count
+        }
+        None => {
+            let w = project.canvas.width;
+            let h = project.canvas.height;
+            for y in 0..h {
+                for x in 0..w {
+                    project.canvas.set(x, y, Cell::default());
+                }
+            }
+            w * h
+        }
+    };
+
+    atomic_save(&mut project, path)?;
+
+    let json = serde_json::json!({
+        "cleared": file,
+        "cells_cleared": cleared,
+        "region": region.map(|(x1,y1,x2,y2)| serde_json::json!({
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2
+        })),
+    });
+    println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
+}
+
+fn cmd_import(
+    image: &str,
+    output: &str,
+    width: usize,
+    height: usize,
+    quantize: &CliColorFormat,
+) -> io::Result<()> {
+    let img_path = Path::new(image);
+    if !img_path.exists() {
+        cli_error(&format!("Image not found: '{}'", image));
+    }
+
+    let out_path = Path::new(output);
+
+    let color_mode = match quantize {
+        CliColorFormat::Color16 => ImportColorMode::Color16,
+        _ => ImportColorMode::Color256,
+    };
+
+    let options = ImportOptions {
+        fit_mode: FitMode::FitToCanvas,
+        color_mode,
+        ..ImportOptions::default()
+    };
+
+    let w = width.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
+    let h = height.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
+
+    let cells = crate::import::import_image(img_path, w, h, &options)
+        .map_err(|e| {
+            cli_error(&format!("Import failed: {}", e));
+        })
+        .unwrap();
+
+    let mut canvas = Canvas::new_with_size(w, h);
+    for (y, row) in cells.iter().enumerate() {
+        for (x, cell) in row.iter().enumerate() {
+            canvas.set(x, y, *cell);
+        }
+    }
+
+    let mut project = Project::new(
+        out_path.file_stem().and_then(|s| s.to_str()).unwrap_or("imported"),
+        canvas,
+        Rgb::WHITE,
+        SymmetryMode::Off,
+    );
+
+    atomic_save(&mut project, out_path)?;
+
+    let json = serde_json::json!({
+        "imported": image,
+        "output": output,
+        "width": w,
+        "height": h,
+        "color_mode": format!("{:?}", color_mode),
+    });
+    println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
 }
 
 fn cmd_new(file: &str, width: usize, height: usize, force: bool) -> io::Result<()> {
