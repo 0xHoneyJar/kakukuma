@@ -309,6 +309,25 @@ pub fn color256_to_rgb(idx: u8) -> Rgb {
     Rgb { r, g, b }
 }
 
+/// Find the nearest ANSI 16 color index for an Rgb value (Euclidean distance).
+pub fn nearest_16(color: &Rgb) -> u8 {
+    let mut best_idx: u8 = 0;
+    let mut best_dist = u32::MAX;
+
+    for (i, &(r, g, b)) in ANSI_16_RGB.iter().enumerate() {
+        let dr = color.r as i32 - r as i32;
+        let dg = color.g as i32 - g as i32;
+        let db = color.b as i32 - b as i32;
+        let dist = (dr * dr + dg * dg + db * db) as u32;
+        if dist < best_dist {
+            best_dist = dist;
+            best_idx = i as u8;
+        }
+    }
+
+    best_idx
+}
+
 /// Find the nearest xterm-256 color index for an Rgb value (Euclidean distance).
 pub fn nearest_256(color: &Rgb) -> u8 {
     let mut best_idx: u8 = 0;

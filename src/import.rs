@@ -62,24 +62,6 @@ impl std::fmt::Display for ImportError {
     }
 }
 
-/// Find the nearest xterm-256 index among the first 16 colors only.
-fn nearest_16(color: &Rgb) -> u8 {
-    let mut best_idx: u8 = 0;
-    let mut best_dist = u32::MAX;
-    for i in 0u8..16 {
-        let c = cell::color256_to_rgb(i);
-        let dr = color.r as i32 - c.r as i32;
-        let dg = color.g as i32 - c.g as i32;
-        let db = color.b as i32 - c.b as i32;
-        let dist = (dr * dr + dg * dg + db * db) as u32;
-        if dist < best_dist {
-            best_dist = dist;
-            best_idx = i;
-        }
-    }
-    best_idx
-}
-
 /// Quantize an RGB pixel to an xterm-256 Rgb value, using a cache.
 fn quantize(
     r: u8,
@@ -94,7 +76,7 @@ fn quantize(
     let src = Rgb::new(r, g, b);
     let idx = match color_mode {
         ImportColorMode::Color256 => cell::nearest_256(&src),
-        ImportColorMode::Color16 => nearest_16(&src),
+        ImportColorMode::Color16 => cell::nearest_16(&src),
     };
     let result = cell::color256_to_rgb(idx);
     cache.insert((r, g, b), result);
@@ -576,7 +558,7 @@ mod tests {
 
         let bg = cells[0][0].bg.unwrap();
         // 16-color quantized red should match one of the 16 ANSI colors
-        let idx = nearest_16(&Rgb::new(255, 0, 0));
+        let idx = cell::nearest_16(&Rgb::new(255, 0, 0));
         assert!(idx < 16, "Should quantize to ANSI 16 range");
         let expected = cell::color256_to_rgb(idx);
         assert_eq!(bg, expected);

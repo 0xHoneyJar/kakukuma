@@ -1,5 +1,5 @@
 use crate::canvas::Canvas;
-use crate::cell::{is_half_block, nearest_256, resolve_half_block, Rgb, ANSI_16_RGB};
+use crate::cell::{is_half_block, nearest_16, nearest_256, resolve_half_block, ResolvedHalfBlock, Rgb};
 
 /// ANSI color format for export.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -10,25 +10,6 @@ pub enum ColorFormat {
     Color256,
     /// ANSI 16-color: \x1b[38;5;Nm (N in 0–15)
     Color16,
-}
-
-/// Find the nearest ANSI 16 color index for an Rgb value (Euclidean distance).
-fn nearest_16(color: &Rgb) -> u8 {
-    let mut best_idx: u8 = 0;
-    let mut best_dist = u32::MAX;
-
-    for (i, &(r, g, b)) in ANSI_16_RGB.iter().enumerate() {
-        let dr = color.r as i32 - r as i32;
-        let dg = color.g as i32 - g as i32;
-        let db = color.b as i32 - b as i32;
-        let dist = (dr * dr + dg * dg + db * db) as u32;
-        if dist < best_dist {
-            best_dist = dist;
-            best_idx = i as u8;
-        }
-    }
-
-    best_idx
 }
 
 /// Returns the bounding box of all non-empty cells as (min_x, min_y, max_x, max_y),
@@ -187,7 +168,9 @@ pub fn to_ansi(canvas: &Canvas, format: ColorFormat) -> String {
 
                 // Determine effective (ch, fg, bg) — half-block resolution or raw cell
                 let (out_ch, fg, bg) = if is_half_block(cell.ch) {
-                    let resolved = resolve_half_block(&cell).unwrap();
+                    let resolved = resolve_half_block(&cell).unwrap_or(ResolvedHalfBlock {
+                        ch: cell.ch, fg: cell.fg, bg: cell.bg,
+                    });
                     (resolved.ch, resolved.fg, resolved.bg)
                 } else {
                     (cell.ch, cell.fg, cell.bg)

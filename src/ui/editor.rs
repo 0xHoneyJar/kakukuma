@@ -5,7 +5,7 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, BorderType, Widget};
 
 use crate::app::App;
-use crate::cell::{blocks, is_half_block, Cell, resolve_half_block};
+use crate::cell::{blocks, is_half_block, Cell, ResolvedHalfBlock, resolve_half_block};
 use crate::input::CanvasArea;
 use crate::theme::Theme;
 use crate::tools::{self, ToolState};
@@ -63,7 +63,9 @@ fn grid_bg(x: usize, y: usize, show_grid: bool, theme: &Theme) -> Color {
 /// Thin wrapper around `cell::resolve_half_block` that maps transparent halves
 /// to grid background colors for terminal display.
 fn resolve_half_block_for_display(cell: Cell, x: usize, y: usize, show_grid: bool, theme: &Theme) -> (char, Color, Color) {
-    let resolved = resolve_half_block(&cell).unwrap();
+    let resolved = resolve_half_block(&cell).unwrap_or(ResolvedHalfBlock {
+        ch: cell.ch, fg: cell.fg, bg: cell.bg,
+    });
 
     if resolved.ch == ' ' {
         return (' ', Color::Reset, grid_bg(x, y, show_grid, theme));
