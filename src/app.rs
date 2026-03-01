@@ -139,6 +139,41 @@ pub struct App {
     pub palette_query: String,
     pub palette_filtered: Vec<usize>,
     pub palette_selected_cmd: usize,
+    // Reference layer
+    pub reference_layer: Option<ReferenceLayer>,
+}
+
+// --- Reference Layer ---
+
+pub struct ReferenceLayer {
+    /// Pre-processed background colors at canvas resolution.
+    /// Indexed [y][x]. Each cell is the original reference color (dimmed at render time).
+    pub colors: Vec<Vec<Option<Rgb>>>,
+    /// Original image path (for project file persistence)
+    pub image_path: String,
+    /// Brightness level: 0=dim (25%), 1=medium (50%), 2=bright (75%)
+    pub brightness: u8,
+    /// Whether reference is currently visible
+    pub visible: bool,
+}
+
+/// Dim a color by the given brightness level for reference layer rendering.
+pub fn dim_color(color: &Rgb, brightness: u8) -> Rgb {
+    if brightness == 2 {
+        // 75%
+        Rgb::new(
+            (color.r as u16 * 3 / 4) as u8,
+            (color.g as u16 * 3 / 4) as u8,
+            (color.b as u16 * 3 / 4) as u8,
+        )
+    } else {
+        let scale = match brightness {
+            0 => 4, // 25%
+            1 => 2, // 50%
+            _ => 4,
+        };
+        Rgb::new(color.r / scale, color.g / scale, color.b / scale)
+    }
 }
 
 // --- Command Palette Registry ---
@@ -283,6 +318,29 @@ pub static COMMANDS: &[PaletteCommand] = &[
         app.symmetry = SymmetryMode::Off;
         app.set_status("Symmetry: Off");
     }},
+    // Reference
+    PaletteCommand { name: "Toggle Reference", category: "Reference", shortcut: "", action: |app| {
+        let msg = if let Some(ref mut layer) = app.reference_layer {
+            layer.visible = !layer.visible;
+            if layer.visible { "Reference: Visible" } else { "Reference: Hidden" }
+        } else {
+            "No reference image loaded"
+        };
+        app.set_status(msg);
+    }},
+    PaletteCommand { name: "Reference Brightness", category: "Reference", shortcut: "", action: |app| {
+        let msg = if let Some(ref mut layer) = app.reference_layer {
+            layer.brightness = (layer.brightness + 1) % 3;
+            match layer.brightness {
+                0 => "Reference brightness: Dim (25%)",
+                1 => "Reference brightness: Medium (50%)",
+                _ => "Reference brightness: Bright (75%)",
+            }
+        } else {
+            "No reference image loaded"
+        };
+        app.set_status(msg);
+    }},
 ];
 
 impl App {
@@ -353,6 +411,7 @@ impl App {
             palette_query: String::new(),
             palette_filtered: (0..COMMANDS.len()).collect(),
             palette_selected_cmd: 0,
+            reference_layer: None,
         };
         app.rebuild_palette_layout();
         app
@@ -903,12 +962,56 @@ impl App {
                 self.dirty = false;
                 self.history = History::new();
                 self.auto_save_ticks = 0;
+                // Load reference image if present
+                self.reference_layer = None;
+                if let Some(ref ref_path) = project.reference_image {
+                    let project_dir = path.parent().unwrap_or(Path::new("."));
+                    let abs_ref = project_dir.join(ref_path);
+                    if let Err(e) = self.load_reference(&abs_ref) {
+                        self.set_status_with_level(
+                            &format!("Reference image not loaded: {}", e),
+                            MessageLevel::Warning,
+                        );
+                    }
+                }
                 self.set_status_with_level(&format!("Opened: {}", filename), MessageLevel::Success);
             }
             Err(e) => {
                 self.set_status_with_level(&format!("Load failed: {}", e), MessageLevel::Error);
             }
         }
+    }
+
+    /// Load a reference image and pre-process it into a color grid at canvas resolution.
+    pub fn load_reference(&mut self, path: &Path) -> Result<(), String> {
+        let img = image::open(path)
+            .map_err(|e| format!("Failed to load reference: {}", e))?;
+        let resized = img.resize_exact(
+            self.canvas.width as u32,
+            self.canvas.height as u32,
+            image::imageops::FilterType::Triangle,
+        );
+        let rgba = resized.to_rgba8();
+        let mut colors = Vec::with_capacity(self.canvas.height);
+        for y in 0..self.canvas.height {
+            let mut row = Vec::with_capacity(self.canvas.width);
+            for x in 0..self.canvas.width {
+                let pixel = rgba.get_pixel(x as u32, y as u32);
+                if pixel[3] < 128 {
+                    row.push(None); // Transparent
+                } else {
+                    row.push(Some(Rgb::new(pixel[0], pixel[1], pixel[2])));
+                }
+            }
+            colors.push(row);
+        }
+        self.reference_layer = Some(ReferenceLayer {
+            colors,
+            image_path: path.to_string_lossy().to_string(),
+            brightness: 0,
+            visible: true,
+        });
+        Ok(())
     }
 
     /// Populate file dialog with .kaku files from current directory.
@@ -1229,6 +1332,46 @@ mod tests {
             if let PaletteItem::SectionHeader(section) = item {
                 assert_ne!(*section, PaletteSection::Recent);
             }
+        }
+    }
+
+    // --- Cycle 018: Reference layer tests ---
+
+    #[test]
+    fn test_dim_color_brightness_0() {
+        let color = Rgb::new(200, 100, 80);
+        let dimmed = dim_color(&color, 0);
+        assert_eq!(dimmed, Rgb::new(50, 25, 20)); // 25%
+    }
+
+    #[test]
+    fn test_dim_color_brightness_1() {
+        let color = Rgb::new(200, 100, 80);
+        let dimmed = dim_color(&color, 1);
+        assert_eq!(dimmed, Rgb::new(100, 50, 40)); // 50%
+    }
+
+    #[test]
+    fn test_dim_color_brightness_2() {
+        let color = Rgb::new(200, 100, 80);
+        let dimmed = dim_color(&color, 2);
+        assert_eq!(dimmed, Rgb::new(150, 75, 60)); // 75%
+    }
+
+    #[test]
+    fn test_reference_layer_init_none() {
+        let app = App::new();
+        assert!(app.reference_layer.is_none());
+    }
+
+    #[test]
+    fn test_command_registry_reference_reachable() {
+        let ref_names = ["Toggle Reference", "Reference Brightness"];
+        for name in &ref_names {
+            assert!(
+                COMMANDS.iter().any(|cmd| cmd.name == *name),
+                "Reference command '{}' not found in COMMANDS", name
+            );
         }
     }
 }

@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, BorderType, Widget};
 
-use crate::app::App;
+use crate::app::{App, ReferenceLayer, dim_color};
 use crate::cell::{blocks, is_half_block, Cell, ResolvedHalfBlock, resolve_half_block};
 use crate::input::CanvasArea;
 use crate::theme::Theme;
@@ -60,19 +60,42 @@ fn grid_bg(x: usize, y: usize, show_grid: bool, theme: &Theme) -> Color {
     }
 }
 
+/// Return the visual background for an empty/transparent cell, checking
+/// the reference layer first, then falling back to grid.
+fn grid_or_reference_bg(
+    x: usize, y: usize, show_grid: bool, theme: &Theme,
+    reference: Option<&ReferenceLayer>,
+) -> Color {
+    if let Some(ref_layer) = reference {
+        if ref_layer.visible {
+            if let Some(Some(ref_color)) = ref_layer.colors.get(y).and_then(|row| row.get(x)) {
+                let dimmed = dim_color(ref_color, ref_layer.brightness);
+                return dimmed.to_ratatui();
+            }
+        }
+    }
+    grid_bg(x, y, show_grid, theme)
+}
+
 /// Thin wrapper around `cell::resolve_half_block` that maps transparent halves
 /// to grid background colors for terminal display.
-fn resolve_half_block_for_display(cell: Cell, x: usize, y: usize, show_grid: bool, theme: &Theme) -> (char, Color, Color) {
+fn resolve_half_block_for_display(
+    cell: Cell, x: usize, y: usize, show_grid: bool, theme: &Theme,
+    reference: Option<&ReferenceLayer>,
+) -> (char, Color, Color) {
     let resolved = resolve_half_block(&cell).unwrap_or(ResolvedHalfBlock {
         ch: cell.ch, fg: cell.fg, bg: cell.bg,
     });
 
     if resolved.ch == ' ' {
-        return (' ', Color::Reset, grid_bg(x, y, show_grid, theme));
+        return (' ', Color::Reset, grid_or_reference_bg(x, y, show_grid, theme, reference));
     }
 
     let fg = resolved.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
-    let bg = resolved.bg.map_or(grid_bg(x, y, show_grid, theme), |rgb| rgb.to_ratatui());
+    let bg = resolved.bg.map_or(
+        grid_or_reference_bg(x, y, show_grid, theme, reference),
+        |rgb| rgb.to_ratatui(),
+    );
     (resolved.ch, fg, bg)
 }
 
@@ -206,6 +229,7 @@ impl<'a> Widget for CanvasWidget<'a> {
         let theme = self.app.theme();
         let vp_x = self.app.viewport_x;
         let vp_y = self.app.viewport_y;
+        let reference = self.app.reference_layer.as_ref();
 
         // Viewport dimensions in canvas cells
         let vp_w = (area.width / zoom as u16) as usize;
@@ -256,13 +280,13 @@ impl<'a> Widget for CanvasWidget<'a> {
                     let c = render_cell.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
                     ('\u{2588}', c, c)
                 } else if render_cell.is_empty() {
-                    (' ', Color::Reset, grid_bg(x, y, show_grid, theme))
+                    (' ', Color::Reset, grid_or_reference_bg(x, y, show_grid, theme, reference))
                 } else if is_half_block(render_cell.ch) {
-                    resolve_half_block_for_display(render_cell, x, y, show_grid, theme)
+                    resolve_half_block_for_display(render_cell, x, y, show_grid, theme, reference)
                 } else {
                     // Fractional fills, shades, and other single-color blocks
                     let fg_color = render_cell.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
-                    (render_cell.ch, fg_color, grid_bg(x, y, show_grid, theme))
+                    (render_cell.ch, fg_color, grid_or_reference_bg(x, y, show_grid, theme, reference))
                 };
 
                 // Symmetry axis visualization
@@ -357,7 +381,7 @@ mod tests {
 
     #[test]
     fn upper_half_one_transparent_bottom() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, WARM.grid_even);
@@ -365,7 +389,7 @@ mod tests {
 
     #[test]
     fn upper_half_both_opaque() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Indexed(4));
@@ -373,7 +397,7 @@ mod tests {
 
     #[test]
     fn upper_half_one_transparent_top_flips() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, Some(BLUE)), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, Some(BLUE)), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▄');
         assert_eq!(fg, Color::Indexed(4));
         assert_eq!(bg, WARM.grid_even);
@@ -381,14 +405,14 @@ mod tests {
 
     #[test]
     fn upper_half_both_transparent() {
-        let (ch, _fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, None), 0, 0, true, &WARM);
+        let (ch, _fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, None), 0, 0, true, &WARM, None);
         assert_eq!(ch, ' ');
         assert_eq!(bg, WARM.grid_even);
     }
 
     #[test]
     fn left_half_one_transparent_right() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), None), 1, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), None), 1, 0, true, &WARM, None);
         assert_eq!(ch, '▌');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, WARM.grid_odd);
@@ -396,7 +420,7 @@ mod tests {
 
     #[test]
     fn left_half_flips_when_left_transparent() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, None, Some(RED)), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, None, Some(RED)), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▐');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, WARM.grid_even);
@@ -404,7 +428,7 @@ mod tests {
 
     #[test]
     fn lower_half_defensive() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LOWER_HALF, Some(BLUE), None), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LOWER_HALF, Some(BLUE), None), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▄');
         assert_eq!(fg, Color::Indexed(4));
         assert_eq!(bg, WARM.grid_even);
@@ -412,7 +436,7 @@ mod tests {
 
     #[test]
     fn right_half_defensive() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::RIGHT_HALF, Some(RED), None), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::RIGHT_HALF, Some(RED), None), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▐');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, WARM.grid_even);
@@ -420,7 +444,7 @@ mod tests {
 
     #[test]
     fn resolve_grid_off_uses_reset() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, false, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, false, &WARM, None);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Reset);
@@ -428,7 +452,7 @@ mod tests {
 
     #[test]
     fn left_half_both_opaque() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▌');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Indexed(4));
@@ -470,5 +494,75 @@ mod tests {
         assert_eq!(ch, '┼');
         assert_eq!(fg, WARM.accent);
         assert_eq!(bg, WARM.panel_bg);
+    }
+
+    // --- Cycle 018: Reference layer rendering tests ---
+
+    #[test]
+    fn grid_or_reference_bg_without_reference() {
+        // Without reference layer, should fall back to grid_bg
+        let bg = grid_or_reference_bg(0, 0, true, &WARM, None);
+        assert_eq!(bg, WARM.grid_even);
+    }
+
+    #[test]
+    fn grid_or_reference_bg_with_visible_reference() {
+        let ref_color = Rgb::new(200, 100, 80);
+        let ref_layer = ReferenceLayer {
+            colors: vec![vec![Some(ref_color)]],
+            image_path: "test.png".to_string(),
+            brightness: 0,
+            visible: true,
+        };
+        let bg = grid_or_reference_bg(0, 0, true, &WARM, Some(&ref_layer));
+        // Should be dimmed reference color (25% at brightness 0)
+        let expected = dim_color(&ref_color, 0).to_ratatui();
+        assert_eq!(bg, expected);
+    }
+
+    #[test]
+    fn grid_or_reference_bg_with_hidden_reference() {
+        let ref_layer = ReferenceLayer {
+            colors: vec![vec![Some(Rgb::new(200, 100, 80))]],
+            image_path: "test.png".to_string(),
+            brightness: 0,
+            visible: false,
+        };
+        // Hidden reference should fall back to grid
+        let bg = grid_or_reference_bg(0, 0, true, &WARM, Some(&ref_layer));
+        assert_eq!(bg, WARM.grid_even);
+    }
+
+    #[test]
+    fn grid_or_reference_bg_transparent_pixel() {
+        let ref_layer = ReferenceLayer {
+            colors: vec![vec![None]],
+            image_path: "test.png".to_string(),
+            brightness: 0,
+            visible: true,
+        };
+        // Transparent pixel should fall back to grid
+        let bg = grid_or_reference_bg(0, 0, true, &WARM, Some(&ref_layer));
+        assert_eq!(bg, WARM.grid_even);
+    }
+
+    #[test]
+    fn half_block_with_reference_transparent_bg() {
+        // Half block with transparent bg should show reference color
+        let ref_color = Rgb::new(200, 100, 80);
+        let ref_layer = ReferenceLayer {
+            colors: vec![vec![Some(ref_color)]],
+            image_path: "test.png".to_string(),
+            brightness: 1,
+            visible: true,
+        };
+        let (ch, fg, bg) = resolve_half_block_for_display(
+            make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, true, &WARM, Some(&ref_layer),
+        );
+        assert_eq!(ch, '▀');
+        assert_eq!(fg, Color::Indexed(1));
+        // bg should be dimmed reference color at brightness 1 (50%)
+        let expected = dim_color(&ref_color, 1).to_ratatui();
+        assert_eq!(bg, expected);
     }
 }

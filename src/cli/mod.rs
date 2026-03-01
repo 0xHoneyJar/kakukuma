@@ -206,6 +206,17 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Set or clear reference image for a project
+    Reference {
+        /// Path to .kaku file
+        file: String,
+        /// Path to reference image (PNG, JPEG, etc.)
+        image: Option<String>,
+        /// Clear reference image
+        #[arg(long)]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -500,6 +511,7 @@ pub fn run(cmd: Command) -> io::Result<()> {
         }
         Command::Palette { action } => palette_cmd::run(action),
         Command::Batch { file, commands, dry_run } => batch::run_batch(&file, &commands, dry_run),
+        Command::Reference { file, image, clear } => cmd_reference(&file, image.as_deref(), clear),
     }
 }
 
@@ -666,6 +678,51 @@ fn cmd_new(file: &str, width: usize, height: usize, force: bool) -> io::Result<(
         "created": file,
         "width": w,
         "height": h,
+    });
+    println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
+}
+
+fn cmd_reference(file: &str, image: Option<&str>, clear: bool) -> io::Result<()> {
+    let path = Path::new(file);
+    let mut project = load_project(file);
+
+    if clear {
+        project.reference_image = None;
+        atomic_save(&mut project, path)?;
+        let json = serde_json::json!({
+            "reference": serde_json::Value::Null,
+            "file": file,
+        });
+        println!("{}", serde_json::to_string(&json).unwrap());
+        return Ok(());
+    }
+
+    let img_path = match image {
+        Some(p) => p,
+        None => {
+            cli_error("Provide an image path or use --clear to remove reference");
+        }
+    };
+
+    // Validate image exists
+    if !Path::new(img_path).exists() {
+        cli_error(&format!("Image not found: '{}'", img_path));
+    }
+
+    // Store path relative to project file directory
+    let project_dir = path.parent().unwrap_or(Path::new("."));
+    let rel_path = match Path::new(img_path).strip_prefix(project_dir) {
+        Ok(rel) => rel.to_string_lossy().to_string(),
+        Err(_) => img_path.to_string(),
+    };
+
+    project.reference_image = Some(rel_path.clone());
+    atomic_save(&mut project, path)?;
+
+    let json = serde_json::json!({
+        "reference": rel_path,
+        "file": file,
     });
     println!("{}", serde_json::to_string(&json).unwrap());
     Ok(())
