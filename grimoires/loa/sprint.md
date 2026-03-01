@@ -174,13 +174,13 @@
 **Files**: `src/project.rs`
 
 **Acceptance Criteria**:
-- [ ] `reference_image: Option<String>` field with `#[serde(skip_serializing_if = "Option::is_none")]` and `#[serde(default)]`
-- [ ] `save_to_file`: sets version to 6 when `reference_image.is_some()`, keeps 5 otherwise
-- [ ] `load_from_file`: accepts versions up to 6
-- [ ] `Project::new()` initializes `reference_image: None`
-- [ ] Test: v6 project roundtrip (save with reference → load → path preserved)
-- [ ] Test: v5 project loads with `reference_image == None`
-- [ ] Test: v5 project without reference saves as v5 (no version bump)
+- [x] `reference_image: Option<String>` field with `#[serde(skip_serializing_if = "Option::is_none")]` and `#[serde(default)]`
+- [x] `save_to_file`: sets version to 6 when `reference_image.is_some()`, keeps 5 otherwise
+- [x] `load_from_file`: accepts versions up to 6
+- [x] `Project::new()` initializes `reference_image: None`
+- [x] Test: v6 project roundtrip (save with reference → load → path preserved)
+- [x] Test: v5 project loads with `reference_image == None`
+- [x] Test: v5 project without reference saves as v5 (no version bump)
 
 ### Task 2.2: Reference Layer Type + Image Loading
 
@@ -189,13 +189,13 @@
 **Files**: `src/app.rs`
 
 **Acceptance Criteria**:
-- [ ] `ReferenceLayer` struct: `colors`, `image_path`, `brightness`, `visible`
-- [ ] `reference_layer: Option<ReferenceLayer>` field in App, initialized to None
-- [ ] `load_reference()` opens image, resizes to canvas dimensions, extracts RGB colors
-- [ ] Transparent pixels (alpha < 128) stored as None
-- [ ] On project load: if `reference_image.is_some()`, resolve path relative to project dir and call `load_reference()`
-- [ ] If image file missing on load: set reference to None, show warning (don't crash)
-- [ ] Test: dim_color at brightness 0/1/2 produces expected values
+- [x] `ReferenceLayer` struct: `colors`, `image_path`, `brightness`, `visible`
+- [x] `reference_layer: Option<ReferenceLayer>` field in App, initialized to None
+- [x] `load_reference()` opens image, resizes to canvas dimensions, extracts RGB colors
+- [x] Transparent pixels (alpha < 128) stored as None
+- [x] On project load: if `reference_image.is_some()`, resolve path relative to project dir and call `load_reference()`
+- [x] If image file missing on load: set reference to None, show warning (don't crash)
+- [x] Test: dim_color at brightness 0/1/2 produces expected values
 
 ### Task 2.3: Reference CLI Command
 
@@ -204,13 +204,13 @@
 **Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `Command::Reference { file, image, clear }` with clap attributes
-- [ ] `kakukuma reference <file> <image>` sets reference_image and saves
-- [ ] `kakukuma reference <file> --clear` removes reference_image and saves
-- [ ] Image path stored relative to project file directory
-- [ ] Validates image file exists before setting
-- [ ] JSON output: `{"reference": "photo.png", "file": "art.kaku"}` or `{"reference": null, ...}`
-- [ ] Atomic save via existing `atomic_save()` pattern
+- [x] `Command::Reference { file, image, clear }` with clap attributes
+- [x] `kakukuma reference <file> <image>` sets reference_image and saves
+- [x] `kakukuma reference <file> --clear` removes reference_image and saves
+- [x] Image path stored relative to project file directory
+- [x] Validates image file exists before setting
+- [x] JSON output: `{"reference": "photo.png", "file": "art.kaku"}` or `{"reference": null, ...}`
+- [x] Atomic save via existing `atomic_save()` pattern
 
 ### Task 2.4: Reference Rendering in Editor
 
@@ -219,14 +219,14 @@
 **Files**: `src/ui/editor.rs`
 
 **Acceptance Criteria**:
-- [ ] New `grid_or_reference_bg()` function replaces `grid_bg()` for empty cells
-- [ ] Reference colors show through transparent cells at dimmed brightness
-- [ ] Opaque cells fully occlude reference
-- [ ] `resolve_half_block_for_display` passes reference layer
-- [ ] Works at zoom 1x, 2x, and 4x (half-block zoom)
-- [ ] All colors go through `Rgb::to_ratatui()` — no `Color::Rgb()` leaks
-- [ ] Render signature changes: `editor::render()` accepts `Option<&ReferenceLayer>`
-- [ ] `ui/mod.rs` passes `app.reference_layer.as_ref()` to editor
+- [x] New `grid_or_reference_bg()` function replaces `grid_bg()` for empty cells
+- [x] Reference colors show through transparent cells at dimmed brightness
+- [x] Opaque cells fully occlude reference
+- [x] `resolve_half_block_for_display` passes reference layer
+- [x] Works at zoom 1x, 2x, and 4x (half-block zoom)
+- [x] All colors go through `Rgb::to_ratatui()` — no `Color::Rgb()` leaks
+- [x] Render signature changes: `editor::render()` accepts `Option<&ReferenceLayer>`
+- [x] `ui/mod.rs` passes `app.reference_layer.as_ref()` to editor
 
 ### Task 2.5: Reference Toggle + Brightness via Command Palette
 
@@ -235,10 +235,10 @@
 **Files**: `src/app.rs`
 
 **Acceptance Criteria**:
-- [ ] "Toggle Reference" command in COMMANDS array — toggles `reference_layer.visible`
-- [ ] "Reference Brightness" command — cycles brightness 0→1→2→0
-- [ ] Both commands gracefully no-op when no reference loaded
-- [ ] Status message shows current brightness level after cycling
+- [x] "Toggle Reference" command in COMMANDS array — toggles `reference_layer.visible`
+- [x] "Reference Brightness" command — cycles brightness 0→1→2→0
+- [x] Both commands gracefully no-op when no reference loaded
+- [x] Status message shows current brightness level after cycling
 
 ### Task 2.6: Integration Testing + Regression Check
 
@@ -247,14 +247,14 @@
 **Files**: Various (test execution only)
 
 **Acceptance Criteria**:
-- [ ] All 285+ existing tests pass
-- [ ] New tests bring total to 305+
-- [ ] `cargo clippy` — no new warnings
-- [ ] Command palette opens/closes correctly in TUI
-- [ ] Batch command executes multi-op JSON file
-- [ ] Reference layer renders behind canvas in TUI (manual visual check)
-- [ ] Project v5 loads without issues
-- [ ] Project v6 roundtrip with reference image
+- [x] All 285+ existing tests pass
+- [x] New tests bring total to 305+
+- [x] `cargo clippy` — no new warnings
+- [x] Command palette opens/closes correctly in TUI
+- [x] Batch command executes multi-op JSON file
+- [x] Reference layer renders behind canvas in TUI (manual visual check)
+- [x] Project v5 loads without issues
+- [x] Project v6 roundtrip with reference image
 
 ---
 
