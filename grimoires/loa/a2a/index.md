@@ -1,5 +1,12 @@
 # Sprint Status Index
 
+## Cycle 019: CLI Polish & Image Export
+
+| Sprint | Global ID | Status | Phase |
+|--------|-----------|--------|-------|
+| Sprint 1 | 5 | COMPLETED | audit: APPROVED |
+| Sprint 2 | 6 | PENDING | — |
+
 ## Cycle 041: Vision-Aware Planning — Creative Agency for AI Peers
 
 | Sprint | Global ID | Status | Phase |

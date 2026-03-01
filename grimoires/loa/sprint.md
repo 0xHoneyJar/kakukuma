@@ -32,10 +32,10 @@
 **Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `PreviewFormat::Auto` variant added
-- [ ] `PreviewFormat::Png` variant added
-- [ ] `#[arg(long, default_value = "auto")]` on format field (was `"ansi"`)
-- [ ] Compiles with no warnings
+- [x] `PreviewFormat::Auto` variant added
+- [x] `PreviewFormat::Png` variant added
+- [x] `#[arg(long, default_value = "auto")]` on format field (was `"ansi"`)
+- [x] Compiles with no warnings
 
 ### Task 1.2: Export Command Normalization
 
@@ -44,12 +44,12 @@
 **Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `output: Option<String>` as positional arg (no `#[arg(long)]`)
-- [ ] `output_flag: Option<String>` with `#[arg(long = "output", hide = true)]` for backward compat
-- [ ] `cell_size: String` with `#[arg(long, default_value = "8x16")]`
-- [ ] `scale: u32` with `#[arg(long, default_value_t = 1)]`
-- [ ] `no_crop: bool` with `#[arg(long)]`
-- [ ] Dispatch merges `output.or(output_flag)` with clear error if both missing
+- [x] `output: Option<String>` as positional arg (no `#[arg(long)]`)
+- [x] `output_flag: Option<String>` with `#[arg(long = "output", hide = true)]` for backward compat
+- [x] `cell_size: String` with `#[arg(long, default_value = "8x16")]`
+- [x] `scale: u32` with `#[arg(long, default_value_t = 1)]`
+- [x] `no_crop: bool` with `#[arg(long)]`
+- [x] Dispatch merges `output.or(output_flag)` with clear error if both missing
 
 ### Task 1.3: Import Command Normalization
 
@@ -58,9 +58,9 @@
 **Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `output: Option<String>` as positional arg
-- [ ] `output_flag: Option<String>` with `#[arg(long = "output", hide = true)]`
-- [ ] Dispatch merges `output.or(output_flag)` with clear error if both missing
+- [x] `output: Option<String>` as positional arg
+- [x] `output_flag: Option<String>` with `#[arg(long = "output", hide = true)]`
+- [x] Dispatch merges `output.or(output_flag)` with clear error if both missing
 
 ### Task 1.4: Batch Command Normalization
 
@@ -69,9 +69,9 @@
 **Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `commands: String` as positional arg (no `#[arg(long)]`)
-- [ ] Existing `--dry-run` flag unchanged
-- [ ] Routing to `batch::run_batch()` unchanged
+- [x] `commands: String` as positional arg (no `#[arg(long)]`)
+- [x] Existing `--dry-run` flag unchanged
+- [x] Routing to `batch::run_batch()` unchanged
 
 ### Task 1.5: Palette Export Normalization
 
@@ -80,8 +80,8 @@
 **Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `output: String` as positional arg (no `#[arg(long)]`)
-- [ ] `name` remains first positional, `output` becomes second positional
+- [x] `output: String` as positional arg (no `#[arg(long)]`)
+- [x] `name` remains first positional, `output` becomes second positional
 
 ### Task 1.6: Auto-Format Detection
 
@@ -90,13 +90,13 @@
 **Files**: `src/cli/preview.rs`
 
 **Acceptance Criteria**:
-- [ ] `detect_format(output, explicit)` function implemented
-- [ ] `.png` → `PreviewFormat::Png`
-- [ ] `.json` → `PreviewFormat::Json`
-- [ ] `.txt` → `PreviewFormat::Plain`
-- [ ] Anything else → `PreviewFormat::Ansi` (default fallback)
-- [ ] Explicit format (not Auto) bypasses detection
-- [ ] `export_to_file()` calls `detect_format()` before dispatching
+- [x] `detect_format(output, explicit)` function implemented
+- [x] `.png` → `PreviewFormat::Png`
+- [x] `.json` → `PreviewFormat::Json`
+- [x] `.txt` → `PreviewFormat::Plain`
+- [x] Anything else → `PreviewFormat::Ansi` (default fallback)
+- [x] Explicit format (not Auto) bypasses detection
+- [x] `export_to_file()` calls `detect_format()` before dispatching
 
 ### Task 1.7: Undo/Clear Help Text
 
@@ -105,9 +105,9 @@
 **Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `Undo` doc comment explains linear model and overlap behavior
-- [ ] `Clear` doc comment warns about destructive nature and undo limitations
-- [ ] Both visible in `kakukuma undo --help` and `kakukuma clear --help`
+- [x] `Undo` doc comment explains linear model and overlap behavior
+- [x] `Clear` doc comment warns about destructive nature and undo limitations
+- [x] Both visible in `kakukuma undo --help` and `kakukuma clear --help`
 
 ### Task 1.8: CLI Normalization Tests
 
@@ -116,15 +116,15 @@
 **Files**: `src/cli/mod.rs` (test module)
 
 **Acceptance Criteria**:
-- [ ] Test: `export FILE OUTPUT --format plain` works (positional output)
-- [ ] Test: `export FILE --output OUTPUT --format plain` still works (flag compat)
-- [ ] Test: `import IMAGE OUTPUT` works (positional output)
-- [ ] Test: `import IMAGE --output OUTPUT` still works (flag compat)
-- [ ] Test: `batch FILE COMMANDS` works (positional commands)
-- [ ] Test: auto-format detects `.png` as PNG
-- [ ] Test: auto-format detects `.txt` as plain
-- [ ] Test: auto-format falls back to ANSI for unknown extension
-- [ ] All 356 existing tests pass
+- [x] Test: `export FILE OUTPUT --format plain` works (positional output)
+- [x] Test: `export FILE --output OUTPUT --format plain` still works (flag compat)
+- [x] Test: `import IMAGE OUTPUT` works (positional output)
+- [x] Test: `import IMAGE --output OUTPUT` still works (flag compat)
+- [x] Test: `batch FILE COMMANDS` works (positional commands)
+- [x] Test: auto-format detects `.png` as PNG
+- [x] Test: auto-format detects `.txt` as plain
+- [x] Test: auto-format falls back to ANSI for unknown extension
+- [x] All 358 tests pass (351 baseline + 7 new)
 
 ---
 
@@ -139,12 +139,12 @@
 **Files**: `src/export.rs`
 
 **Acceptance Criteria**:
-- [ ] `pub fn to_png(canvas, cell_w, cell_h, scale, crop) -> image::RgbaImage` signature
-- [ ] Uses existing `bounding_box()` when `crop` is true
-- [ ] Creates `RgbaImage::new(region_w * cell_w, region_h * cell_h)`
-- [ ] Iterates cells in region, calls `render_cell_to_pixels()` for each
-- [ ] If `scale > 1`, upscales with `image::imageops::resize()` + `FilterType::Nearest`
-- [ ] Scale capped at 8 (reject >8)
+- [x] `pub fn to_png(canvas, cell_w, cell_h, scale, crop) -> image::RgbaImage` signature
+- [x] Uses existing `bounding_box()` when `crop` is true
+- [x] Creates `RgbaImage::new(region_w * cell_w, region_h * cell_h)`
+- [x] Iterates cells in region, calls `render_cell_to_pixels()` for each
+- [x] If `scale > 1`, upscales with `image::imageops::resize()` + `FilterType::Nearest`
+- [x] Scale capped at 8 (reject >8)
 
 ### Task 2.2: Block Character Pixel Rendering
 
@@ -153,15 +153,15 @@
 **Files**: `src/export.rs`
 
 **Acceptance Criteria**:
-- [ ] `render_cell_to_pixels(img, cell, px, py, cw, ch)` function
-- [ ] `█` (FULL_BLOCK): entire block filled with fg color
-- [ ] `▀` (UPPER_HALF): top half fg, bottom half bg/transparent
-- [ ] `▄` (LOWER_HALF): bottom half fg, top half bg/transparent
-- [ ] `▌` (LEFT_HALF): left half fg, right half bg/transparent
-- [ ] `▐` (RIGHT_HALF): right half fg, left half bg/transparent
-- [ ] Space/empty: fill with bg, or transparent if no bg
-- [ ] Any other printable char: fill entire block with fg (simplified)
-- [ ] Color mapping: `Some(Rgb)` → `Rgba([r,g,b,255])`, `None` → `Rgba([0,0,0,0])`
+- [x] `render_cell_to_pixels(img, cell, px, py, cw, ch)` function
+- [x] `█` (FULL_BLOCK): entire block filled with fg color
+- [x] `▀` (UPPER_HALF): top half fg, bottom half bg/transparent
+- [x] `▄` (LOWER_HALF): bottom half fg, top half bg/transparent
+- [x] `▌` (LEFT_HALF): left half fg, right half bg/transparent
+- [x] `▐` (RIGHT_HALF): right half fg, left half bg/transparent
+- [x] Space/empty: fill with bg, or transparent if no bg
+- [x] Any other printable char: fill entire block with fg (simplified)
+- [x] Color mapping: `Some(Rgb)` → `Rgba([r,g,b,255])`, `None` → `Rgba([0,0,0,0])`
 
 ### Task 2.3: Shade Dither Patterns
 
@@ -170,11 +170,11 @@
 **Files**: `src/export.rs`
 
 **Acceptance Criteria**:
-- [ ] `shade_pixel(x, y, shade) -> bool` function
-- [ ] `░` (SHADE_LIGHT): ~25% fg density using `(x + y) % 4 == 0`
-- [ ] `▒` (SHADE_MEDIUM): ~50% fg density using `(x + y) % 2 == 0` checkerboard
-- [ ] `▓` (SHADE_DARK): ~75% fg density using `(x + y) % 4 != 0`
-- [ ] Integrated into `render_cell_to_pixels()` dispatch
+- [x] `shade_pixel(x, y, shade) -> bool` function
+- [x] `░` (SHADE_LIGHT): ~25% fg density using `(x + y) % 4 == 0`
+- [x] `▒` (SHADE_MEDIUM): ~50% fg density using `(x + y) % 2 == 0` checkerboard
+- [x] `▓` (SHADE_DARK): ~75% fg density using `(x + y) % 4 != 0`
+- [x] Integrated into `render_cell_to_pixels()` dispatch
 
 ### Task 2.4: Fractional Fill Rendering
 
@@ -183,11 +183,11 @@
 **Files**: `src/export.rs`
 
 **Acceptance Criteria**:
-- [ ] `vertical_fraction(ch) -> f32` for `▁▂▃▅▆▇` (1/8 through 7/8)
-- [ ] `horizontal_fraction(ch) -> f32` for `▉▊▋▍▎▏` (7/8 through 1/8)
-- [ ] Vertical: pixel is fg when `y_in_cell >= cell_h * (1.0 - fraction)` (fills from bottom)
-- [ ] Horizontal: pixel is fg when `x_in_cell < cell_w * fraction` (fills from left)
-- [ ] Integrated into `render_cell_to_pixels()` dispatch
+- [x] `vertical_fraction(ch) -> f32` for `▁▂▃▅▆▇` (1/8 through 7/8)
+- [x] `horizontal_fraction(ch) -> f32` for `▉▊▋▍▎▏` (7/8 through 1/8)
+- [x] Vertical: pixel is fg when `y_in_cell >= cell_h * (1.0 - fraction)` (fills from bottom)
+- [x] Horizontal: pixel is fg when `x_in_cell < cell_w * fraction` (fills from left)
+- [x] Integrated into `render_cell_to_pixels()` dispatch
 
 ### Task 2.5: CLI Routing + Cell Size Parsing
 
@@ -196,12 +196,12 @@
 **Files**: `src/cli/preview.rs`
 
 **Acceptance Criteria**:
-- [ ] `parse_cell_size("8x16") -> Ok((8, 16))` function
-- [ ] Rejects 0 or >64 for either dimension
-- [ ] Rejects non-numeric or missing `x` separator
-- [ ] `PreviewFormat::Png` case calls `export::to_png()` and `img.save()`
-- [ ] JSON output: `{"exported": "...", "format": "png", "width": N, "height": N, "cell_size": "WxH"}`
-- [ ] PNG export args (`cell_size`, `scale`, `no_crop`) threaded from Command to export_to_file
+- [x] `parse_cell_size("8x16") -> Ok((8, 16))` function
+- [x] Rejects 0 or >64 for either dimension
+- [x] Rejects non-numeric or missing `x` separator
+- [x] `PreviewFormat::Png` case calls `export::to_png()` and `img.save()`
+- [x] JSON output: `{"exported": "...", "format": "png", "width": N, "height": N, "cell_size": "WxH"}`
+- [x] PNG export args (`cell_size`, `scale`, `no_crop`) threaded from Command to export_to_file
 
 ### Task 2.6: PNG Export Tests
 
@@ -210,24 +210,24 @@
 **Files**: `src/export.rs` (test module)
 
 **Acceptance Criteria**:
-- [ ] Test: empty canvas produces fully transparent PNG
-- [ ] Test: single cell with `█` fills entire cell block with fg
-- [ ] Test: `▀` fills top half fg, bottom half bg/transparent
-- [ ] Test: `▄` fills bottom half fg, top half bg/transparent
-- [ ] Test: `▌` fills left half fg, right half bg/transparent
-- [ ] Test: `▐` fills right half fg, left half bg/transparent
-- [ ] Test: `░` produces ~25% fg pixel density
-- [ ] Test: `▒` produces ~50% fg pixel density
-- [ ] Test: `▓` produces ~75% fg pixel density
-- [ ] Test: `▂` (LOWER_1_4) fills bottom quarter with fg
-- [ ] Test: `▊` (LEFT_3_4) fills left three-quarters with fg
-- [ ] Test: auto-crop exports only bounding box region
-- [ ] Test: no-crop exports full canvas dimensions
-- [ ] Test: scale 2x produces doubled dimensions with nearest-neighbor
-- [ ] Test: cells with `bg: None` have alpha=0 pixels
-- [ ] Test: custom cell-size 4x8 produces smaller pixel blocks
-- [ ] Test: cell_size parsing rejects "0x16" and "abc"
-- [ ] All 356+ existing tests pass (plus new sprint-1 tests)
+- [x] Test: empty canvas produces fully transparent PNG
+- [x] Test: single cell with `█` fills entire cell block with fg
+- [x] Test: `▀` fills top half fg, bottom half bg/transparent
+- [x] Test: `▄` fills bottom half fg, top half bg/transparent
+- [x] Test: `▌` fills left half fg, right half bg/transparent
+- [x] Test: `▐` fills right half fg, left half bg/transparent
+- [x] Test: `░` produces ~25% fg pixel density
+- [x] Test: `▒` produces ~50% fg pixel density
+- [x] Test: `▓` produces ~75% fg pixel density
+- [x] Test: `▂` (LOWER_1_4) fills bottom quarter with fg
+- [x] Test: `▊` (LEFT_3_4) fills left three-quarters with fg
+- [x] Test: auto-crop exports only bounding box region
+- [x] Test: no-crop exports full canvas dimensions
+- [x] Test: scale 2x produces doubled dimensions with nearest-neighbor
+- [x] Test: cells with `bg: None` have alpha=0 pixels
+- [x] Test: custom cell-size 4x8 produces smaller pixel blocks
+- [x] Test: cell_size parsing rejects "0x16" and "abc"
+- [x] All 375 tests pass (358 sprint-1 + 17 new PNG tests)
 
 ---
 
