@@ -171,6 +171,12 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
             }
             return;
         }
+        AppMode::CommandPalette => {
+            if let Event::Key(key) = event {
+                handle_command_palette(app, key);
+            }
+            return;
+        }
         _ => {}
     }
 
@@ -403,6 +409,12 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 if matches!(app.active_tool, ToolKind::Pencil | ToolKind::Eraser) {
                     app.end_stroke();
                 }
+            } else {
+                // Open command palette
+                app.palette_query.clear();
+                app.palette_filtered = (0..crate::app::COMMANDS.len()).collect();
+                app.palette_selected_cmd = 0;
+                app.mode = AppMode::CommandPalette;
             }
         }
 
@@ -489,6 +501,56 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             }
         }
 
+        _ => {}
+    }
+}
+
+fn handle_command_palette(app: &mut App, key: KeyEvent) {
+    use crate::app::{fuzzy_match, COMMANDS};
+
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Enter => {
+            if let Some(&idx) = app.palette_filtered.get(app.palette_selected_cmd) {
+                let action = COMMANDS[idx].action;
+                app.mode = AppMode::Normal;
+                action(app);
+            } else {
+                app.mode = AppMode::Normal;
+            }
+        }
+        KeyCode::Up => {
+            if app.palette_selected_cmd > 0 {
+                app.palette_selected_cmd -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if !app.palette_filtered.is_empty()
+                && app.palette_selected_cmd + 1 < app.palette_filtered.len()
+            {
+                app.palette_selected_cmd += 1;
+            }
+        }
+        KeyCode::Backspace => {
+            app.palette_query.pop();
+            // Re-filter
+            app.palette_filtered = (0..COMMANDS.len())
+                .filter(|&i| fuzzy_match(&app.palette_query, COMMANDS[i].name))
+                .collect();
+            if app.palette_selected_cmd >= app.palette_filtered.len() {
+                app.palette_selected_cmd = app.palette_filtered.len().saturating_sub(1);
+            }
+        }
+        KeyCode::Char(c) => {
+            app.palette_query.push(c);
+            // Re-filter
+            app.palette_filtered = (0..COMMANDS.len())
+                .filter(|&i| fuzzy_match(&app.palette_query, COMMANDS[i].name))
+                .collect();
+            app.palette_selected_cmd = 0;
+        }
         _ => {}
     }
 }

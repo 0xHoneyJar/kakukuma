@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod draw;
 pub mod preview;
 pub mod inspect;
@@ -192,6 +193,18 @@ pub enum Command {
     Palette {
         #[command(subcommand)]
         action: PaletteAction,
+    },
+
+    /// Execute batch operations from a JSON file
+    Batch {
+        /// Path to .kaku file
+        file: String,
+        /// Path to JSON commands file
+        #[arg(long)]
+        commands: String,
+        /// Validate JSON without executing
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -486,6 +499,7 @@ pub fn run(cmd: Command) -> io::Result<()> {
             cmd_import(&image, &output, width, height, &quantize)
         }
         Command::Palette { action } => palette_cmd::run(action),
+        Command::Batch { file, commands, dry_run } => batch::run_batch(&file, &commands, dry_run),
     }
 }
 

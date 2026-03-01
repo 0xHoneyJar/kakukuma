@@ -162,6 +162,7 @@ pub fn render(f: &mut Frame, app: &App) -> CanvasArea {
         AppMode::BlockPicker => render_block_picker(f, app, size),
         AppMode::ImportBrowse => render_import_browse(f, app, size),
         AppMode::ImportOptions => render_import_options(f, app, size),
+        AppMode::CommandPalette => render_command_palette(f, app, size),
         _ => {}
     }
 
@@ -1271,6 +1272,94 @@ fn render_import_options(f: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title(" Import Options ")
+                .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
+        );
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
+    use crate::app::COMMANDS;
+
+    let theme = app.theme();
+    let width = 52u16.min(area.width.saturating_sub(4));
+    let max_visible = 10usize;
+    let height = (max_visible as u16 + 4).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + area.height / 6;
+
+    let dialog_area = Rect::new(x, y, width, height);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Input line
+    let input_line = format!("> {}", app.palette_query);
+    lines.push(Line::from(Span::styled(
+        input_line,
+        Style::default().fg(Color::White).bg(theme.panel_bg),
+    )));
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(width.saturating_sub(2) as usize),
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let total = app.palette_filtered.len();
+    let scroll = if app.palette_selected_cmd >= max_visible {
+        app.palette_selected_cmd - max_visible + 1
+    } else {
+        0
+    };
+
+    let visible_end = total.min(scroll + max_visible);
+    for i in scroll..visible_end {
+        let cmd_idx = app.palette_filtered[i];
+        let cmd = &COMMANDS[cmd_idx];
+        let is_selected = i == app.palette_selected_cmd;
+
+        let inner_w = width.saturating_sub(2) as usize;
+        let shortcut_len = cmd.shortcut.len();
+        let name_max = inner_w.saturating_sub(shortcut_len + 1);
+        let name_display: String = if cmd.name.len() > name_max {
+            cmd.name[..name_max].to_string()
+        } else {
+            cmd.name.to_string()
+        };
+        let padding = inner_w.saturating_sub(name_display.len() + shortcut_len);
+
+        let style = if is_selected {
+            Style::default().fg(Color::Black).bg(theme.highlight)
+        } else {
+            Style::default().fg(Color::White).bg(theme.panel_bg)
+        };
+        let shortcut_style = if is_selected {
+            Style::default().fg(Color::Black).bg(theme.highlight)
+        } else {
+            Style::default().fg(theme.dim).bg(theme.panel_bg)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {}", name_display), style),
+            Span::styled(" ".repeat(padding), style),
+            Span::styled(cmd.shortcut.to_string(), shortcut_style),
+            Span::styled(" ", style),
+        ]));
+    }
+
+    let rendered = visible_end.saturating_sub(scroll);
+    for _ in rendered..max_visible {
+        lines.push(Line::from(Span::styled(
+            " ".repeat(width.saturating_sub(2) as usize),
+            Style::default().bg(theme.panel_bg),
+        )));
+    }
+
+    let dialog = Paragraph::new(lines)
+        .style(Style::default().fg(Color::White).bg(theme.panel_bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Commands ")
                 .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
         );
     f.render_widget(Clear, dialog_area);

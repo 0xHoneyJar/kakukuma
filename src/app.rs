@@ -32,6 +32,7 @@ pub enum AppMode {
     BlockPicker,
     ImportBrowse,
     ImportOptions,
+    CommandPalette,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -134,7 +135,155 @@ pub struct App {
     pub import_color: usize,   // 0=256, 1=16
     pub import_charset: usize, // 0=Full, 1=Half
     pub import_options_cursor: usize, // 0=fit, 1=color, 2=charset
+    // Command palette state
+    pub palette_query: String,
+    pub palette_filtered: Vec<usize>,
+    pub palette_selected_cmd: usize,
 }
+
+// --- Command Palette Registry ---
+
+pub struct PaletteCommand {
+    pub name: &'static str,
+    pub category: &'static str,
+    pub shortcut: &'static str,
+    pub action: fn(&mut App),
+}
+
+/// Fuzzy subsequence match: each character of `query` must appear in order
+/// in `target`. Spaces in query skip to next word boundary. Case-insensitive.
+pub fn fuzzy_match(query: &str, target: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let target_lower: Vec<char> = target.to_lowercase().chars().collect();
+    let mut ti = 0;
+    for qch in query.to_lowercase().chars() {
+        if qch == ' ' {
+            // Skip to next word boundary in target (next char after a space)
+            while ti < target_lower.len() && target_lower[ti] != ' ' {
+                ti += 1;
+            }
+            // Skip the space itself
+            if ti < target_lower.len() {
+                ti += 1;
+            }
+            continue;
+        }
+        // Find next occurrence of qch in target
+        while ti < target_lower.len() && target_lower[ti] != qch {
+            ti += 1;
+        }
+        if ti >= target_lower.len() {
+            return false;
+        }
+        ti += 1;
+    }
+    true
+}
+
+pub static COMMANDS: &[PaletteCommand] = &[
+    // Tools
+    PaletteCommand { name: "Pencil", category: "Tools", shortcut: "P", action: |app| { app.active_tool = ToolKind::Pencil; app.cancel_tool(); } },
+    PaletteCommand { name: "Eraser", category: "Tools", shortcut: "E", action: |app| { app.active_tool = ToolKind::Eraser; app.cancel_tool(); } },
+    PaletteCommand { name: "Line", category: "Tools", shortcut: "L", action: |app| { app.active_tool = ToolKind::Line; app.cancel_tool(); } },
+    PaletteCommand { name: "Rectangle", category: "Tools", shortcut: "R", action: |app| { app.active_tool = ToolKind::Rectangle; app.cancel_tool(); } },
+    PaletteCommand { name: "Fill", category: "Tools", shortcut: "F", action: |app| { app.active_tool = ToolKind::Fill; app.cancel_tool(); } },
+    PaletteCommand { name: "Eyedropper", category: "Tools", shortcut: "I", action: |app| { app.active_tool = ToolKind::Eyedropper; app.cancel_tool(); } },
+    // Canvas
+    PaletteCommand { name: "New Canvas", category: "Canvas", shortcut: "Ctrl+N", action: |app| {
+        app.new_canvas_width = app.canvas.width;
+        app.new_canvas_height = app.canvas.height;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = app.canvas.width.to_string();
+        app.mode = AppMode::NewCanvas;
+    }},
+    PaletteCommand { name: "Resize Canvas", category: "Canvas", shortcut: "Ctrl+R", action: |app| {
+        app.new_canvas_width = app.canvas.width;
+        app.new_canvas_height = app.canvas.height;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = app.canvas.width.to_string();
+        app.mode = AppMode::ResizeCanvas;
+    }},
+    PaletteCommand { name: "Clear Canvas", category: "Canvas", shortcut: "", action: |app| {
+        let w = app.canvas.width;
+        let h = app.canvas.height;
+        for y in 0..h {
+            for x in 0..w {
+                app.canvas.set(x, y, crate::cell::Cell::default());
+            }
+        }
+        app.dirty = true;
+        app.set_status("Canvas cleared");
+    }},
+    PaletteCommand { name: "Import Image", category: "Canvas", shortcut: "Ctrl+I", action: |app| {
+        app.import_dir = std::env::current_dir().unwrap_or_default();
+        app.import_path = None;
+        app.mode = AppMode::ImportBrowse;
+    }},
+    // File
+    PaletteCommand { name: "Save", category: "File", shortcut: "Ctrl+S", action: |app| {
+        if !app.save_project() {
+            app.text_input = app.project_name.clone().unwrap_or_else(|| "untitled".to_string());
+            app.mode = AppMode::SaveAs;
+        }
+    }},
+    PaletteCommand { name: "Save As", category: "File", shortcut: "", action: |app| {
+        app.text_input = app.project_name.clone().unwrap_or_else(|| "untitled".to_string());
+        app.mode = AppMode::SaveAs;
+    }},
+    PaletteCommand { name: "Open", category: "File", shortcut: "Ctrl+O", action: |app| { app.open_file_dialog(); } },
+    PaletteCommand { name: "Export", category: "File", shortcut: "Ctrl+E", action: |app| {
+        app.export_format = 0;
+        app.export_dest = 0;
+        app.export_cursor = 0;
+        app.export_color_format = 0;
+        app.mode = AppMode::ExportDialog;
+    }},
+    // Edit
+    PaletteCommand { name: "Undo", category: "Edit", shortcut: "Ctrl+Z", action: |app| { app.undo(); } },
+    PaletteCommand { name: "Redo", category: "Edit", shortcut: "Ctrl+Y", action: |app| { app.redo(); } },
+    PaletteCommand { name: "Toggle Filled Rect", category: "Edit", shortcut: "T", action: |app| {
+        app.filled_rect = !app.filled_rect;
+        app.set_status(if app.filled_rect { "Rect: Filled" } else { "Rect: Outline" });
+    }},
+    // View
+    PaletteCommand { name: "Cycle Zoom", category: "View", shortcut: "Z", action: |app| { app.cycle_zoom(); } },
+    PaletteCommand { name: "Cycle Theme", category: "View", shortcut: "Ctrl+T", action: |app| { app.cycle_theme(); } },
+    PaletteCommand { name: "Help", category: "View", shortcut: "?", action: |app| { app.mode = AppMode::Help; } },
+    // Character
+    PaletteCommand { name: "Block Picker", category: "Character", shortcut: "Shift+B", action: |app| { app.open_block_picker(); } },
+    PaletteCommand { name: "Cycle Block", category: "Character", shortcut: "B", action: |app| { app.cycle_block(); } },
+    PaletteCommand { name: "Cycle Shade", category: "Character", shortcut: "G", action: |app| { app.cycle_shade(); } },
+    // Color
+    PaletteCommand { name: "HSL Sliders", category: "Color", shortcut: "S", action: |app| {
+        let (h, s, l) = crate::palette::rgb_to_hsl(app.color.r, app.color.g, app.color.b);
+        app.slider_h = h;
+        app.slider_s = s;
+        app.slider_l = l;
+        app.slider_active = 0;
+        app.mode = AppMode::ColorSliders;
+    }},
+    PaletteCommand { name: "Hex Color Input", category: "Color", shortcut: "X", action: |app| {
+        app.text_input = String::new();
+        app.mode = AppMode::HexColorInput;
+    }},
+    PaletteCommand { name: "Palette Manager", category: "Color", shortcut: "C", action: |app| { app.open_palette_dialog(); } },
+    PaletteCommand { name: "Add to Palette", category: "Color", shortcut: "A", action: |app| { app.add_color_to_custom_palette(); } },
+    // Symmetry
+    PaletteCommand { name: "Symmetry Horizontal", category: "Symmetry", shortcut: "H", action: |app| {
+        app.symmetry = app.symmetry.toggle_horizontal();
+        app.set_status(&format!("Symmetry: {}", app.symmetry.label()));
+    }},
+    PaletteCommand { name: "Symmetry Vertical", category: "Symmetry", shortcut: "V", action: |app| {
+        app.symmetry = app.symmetry.toggle_vertical();
+        app.set_status(&format!("Symmetry: {}", app.symmetry.label()));
+    }},
+    PaletteCommand { name: "Symmetry Off", category: "Symmetry", shortcut: "", action: |app| {
+        app.symmetry = SymmetryMode::Off;
+        app.set_status("Symmetry: Off");
+    }},
+];
 
 impl App {
     pub fn new() -> Self {
@@ -201,6 +350,9 @@ impl App {
             import_color: 0,
             import_charset: 1, // Default to HalfBlocks
             import_options_cursor: 0,
+            palette_query: String::new(),
+            palette_filtered: (0..COMMANDS.len()).collect(),
+            palette_selected_cmd: 0,
         };
         app.rebuild_palette_layout();
         app
@@ -995,6 +1147,78 @@ mod tests {
         app.set_status_with_level("error", MessageLevel::Error);
         let msg = app.status_message.as_ref().unwrap();
         assert_eq!(msg.level, MessageLevel::Error);
+    }
+
+    #[test]
+    fn test_fuzzy_match_basic() {
+        assert!(fuzzy_match("sav", "Save"));
+        assert!(fuzzy_match("sav", "Save As"));
+        assert!(fuzzy_match("", "anything"));
+        assert!(!fuzzy_match("xyz", "Save"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_case_insensitive() {
+        assert!(fuzzy_match("SAV", "save"));
+        assert!(fuzzy_match("sav", "SAVE"));
+        assert!(fuzzy_match("Pen", "pencil"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_space_skip() {
+        assert!(fuzzy_match("sym h", "Symmetry Horizontal"));
+        assert!(fuzzy_match("new c", "New Canvas"));
+        assert!(!fuzzy_match("sym q", "Symmetry Horizontal"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_subsequence() {
+        assert!(fuzzy_match("hl", "Help"));
+        assert!(fuzzy_match("pc", "Pencil"));
+        assert!(fuzzy_match("fl", "Fill"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_exact() {
+        assert!(fuzzy_match("Pencil", "Pencil"));
+        assert!(fuzzy_match("pencil", "Pencil"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_no_match() {
+        assert!(!fuzzy_match("zzz", "Pencil"));
+        assert!(!fuzzy_match("ab", "ba"));
+    }
+
+    #[test]
+    fn test_command_registry_tools_reachable() {
+        // Every ToolKind should be reachable via a COMMANDS entry
+        let tool_names = ["Pencil", "Eraser", "Line", "Rectangle", "Fill", "Eyedropper"];
+        for tool_name in &tool_names {
+            assert!(
+                COMMANDS.iter().any(|cmd| cmd.name == *tool_name),
+                "Tool '{}' not found in COMMANDS", tool_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_registry_symmetry_reachable() {
+        let sym_names = ["Symmetry Horizontal", "Symmetry Vertical", "Symmetry Off"];
+        for name in &sym_names {
+            assert!(
+                COMMANDS.iter().any(|cmd| cmd.name == *name),
+                "Symmetry '{}' not found in COMMANDS", name
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_palette_state_init() {
+        let app = App::new();
+        assert!(app.palette_query.is_empty());
+        assert_eq!(app.palette_filtered.len(), COMMANDS.len());
+        assert_eq!(app.palette_selected_cmd, 0);
     }
 
     #[test]
