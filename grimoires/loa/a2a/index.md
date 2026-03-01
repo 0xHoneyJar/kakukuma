@@ -5,7 +5,7 @@
 | Sprint | Global ID | Status | Phase |
 |--------|-----------|--------|-------|
 | Sprint 1 | 5 | COMPLETED | audit: APPROVED |
-| Sprint 2 | 6 | PENDING | — |
+| Sprint 2 | 6 | COMPLETED | audit: APPROVED |
 
 ## Cycle 041: Vision-Aware Planning — Creative Agency for AI Peers
 
