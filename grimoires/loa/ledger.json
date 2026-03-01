@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "active_cycle": "cycle-018",
+  "active_cycle": "cycle-019",
   "cycles": [
     {
       "id": "cycle-001",
@@ -128,8 +128,10 @@
     {
       "id": "cycle-018",
       "label": "Creative Power Tools — Command Palette, Reference Layer, Batch Draw",
-      "status": "active",
+      "status": "archived",
       "created": "2026-02-28T00:00:00Z",
+      "archived": "2026-03-01T00:00:00Z",
+      "archive_path": "grimoires/loa/archive/2026-02-28-creative-power-tools",
       "prd": "grimoires/loa/prd.md",
       "sdd": "grimoires/loa/sdd.md",
       "sprint_plan": "grimoires/loa/sprint.md",
@@ -145,6 +147,29 @@
           "global_id": 4,
           "label": "Reference Layer + Integration Polish",
           "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "cycle-019",
+      "label": "CLI Polish & Image Export",
+      "status": "active",
+      "created": "2026-03-01T00:00:00Z",
+      "prd": "grimoires/loa/prd.md",
+      "sdd": "grimoires/loa/sdd.md",
+      "sprint_plan": "grimoires/loa/sprint.md",
+      "sprints": [
+        {
+          "local_id": 1,
+          "global_id": 5,
+          "label": "CLI Normalization + Format Infrastructure",
+          "status": "pending"
+        },
+        {
+          "local_id": 2,
+          "global_id": 6,
+          "label": "PNG Export Engine",
+          "status": "pending"
         }
       ]
     }

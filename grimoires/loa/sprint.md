@@ -1,7 +1,7 @@
-# Sprint Plan: Creative Power Tools — Command Palette, Reference Layer, Batch Draw
+# Sprint Plan: CLI Polish & Image Export
 
-> **Cycle**: 018
-> **Created**: 2026-02-28
+> **Cycle**: 019
+> **Created**: 2026-03-01
 > **PRD**: grimoires/loa/prd.md
 > **SDD**: grimoires/loa/sdd.md
 
@@ -12,249 +12,222 @@
 | Item | Value |
 |------|-------|
 | Total sprints | 2 |
-| Sprint 1 | Command Palette + Batch Draw |
-| Sprint 2 | Reference Layer + Integration Polish |
-| Estimated new tests | 18-20 |
-| Target total tests | 305+ |
-| New files | 1 (`src/cli/batch.rs`) |
-| Modified files | 6 |
+| Sprint 1 | CLI Normalization + Format Infrastructure |
+| Sprint 2 | PNG Export Engine |
+| Estimated new tests | 25 |
+| Target total tests | 381+ |
+| New files | 0 |
+| Modified files | 3 (`src/cli/mod.rs`, `src/export.rs`, `src/cli/preview.rs`) |
 
 ---
 
-## Sprint 1: Command Palette + Batch Draw
+## Sprint 1: CLI Normalization + Format Infrastructure
 
-**Goal**: Deliver the two independent features — the TUI command palette (human discoverability) and the CLI batch draw command (agent throughput).
+**Goal**: Normalize all 4 commands with required flags to positional args, add backward-compatible aliases, add `Auto`/`Png` format variants, wire up new export args (`--cell-size`, `--scale`, `--no-crop`), and update undo/clear help text. This sprint sets up all CLI plumbing for Sprint 2's PNG rendering.
 
-### Task 1.1: Command Registry
+### Task 1.1: PreviewFormat Enum Extension
 
-**Description**: Create the `PaletteCommand` struct and static `COMMANDS` array in `app.rs` with all ~31 editor commands mapped to function pointers.
+**Description**: Add `Auto` and `Png` variants to the `PreviewFormat` enum in `src/cli/mod.rs`. `Auto` becomes the new default for `--format`.
 
-**Files**: `src/app.rs`
-
-**Acceptance Criteria**:
-- [ ] `PaletteCommand` struct with `name`, `category`, `shortcut`, `action: fn(&mut App)` fields
-- [ ] Static `COMMANDS` array with all commands across 9 categories (Tools, Canvas, File, Edit, View, Character, Color, Symmetry, Help)
-- [ ] Each command's `action` correctly invokes the corresponding App method
-- [ ] Test: every ToolKind variant is reachable via a command
-- [ ] Test: every SymmetryMode variant is reachable via a command
-
-### Task 1.2: Fuzzy Matching
-
-**Description**: Implement the `fuzzy_match(query, target) -> bool` function for filtering commands. Subsequence matching with space-skip.
-
-**Files**: `src/app.rs`
+**Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `fuzzy_match("sav", "Save")` returns true
-- [ ] `fuzzy_match("sav", "Save As")` returns true
-- [ ] `fuzzy_match("sym h", "Symmetry Horizontal")` returns true
-- [ ] `fuzzy_match("xyz", "Save")` returns false
-- [ ] `fuzzy_match("", "anything")` returns true (empty matches all)
-- [ ] Case-insensitive matching
-- [ ] 6+ unit tests for fuzzy matching
-
-### Task 1.3: Command Palette Mode + State
-
-**Description**: Add `AppMode::CommandPalette` variant and palette state fields to `App`. Wire up initialization in the `App::new()` constructor.
-
-**Files**: `src/app.rs`
-
-**Acceptance Criteria**:
-- [ ] `AppMode::CommandPalette` variant added to enum
-- [ ] New fields: `palette_query: String`, `palette_filtered: Vec<usize>`, `palette_selected: usize`
-- [ ] Fields initialized in `App::new()`
+- [ ] `PreviewFormat::Auto` variant added
+- [ ] `PreviewFormat::Png` variant added
+- [ ] `#[arg(long, default_value = "auto")]` on format field (was `"ansi"`)
 - [ ] Compiles with no warnings
 
-### Task 1.4: Command Palette Input Handling
+### Task 1.2: Export Command Normalization
 
-**Description**: Modify the Spacebar dispatch in `handle_key()` and add `handle_command_palette()` to the mode dispatch table in `handle_event()`.
-
-**Files**: `src/input.rs`
-
-**Acceptance Criteria**:
-- [ ] Spacebar opens palette when `!canvas_cursor_active` (existing draw behavior preserved when active)
-- [ ] `AppMode::CommandPalette` added to the mode dispatch table (before the `_ => {}` fallthrough)
-- [ ] `handle_command_palette()` handles: printable chars (filter), Backspace (delete), Up/Down (navigate), Enter (execute), Esc (dismiss)
-- [ ] On Enter: selected command's `action` is called, mode returns to Normal
-- [ ] On Esc: mode returns to Normal, no action
-- [ ] `palette_selected` wraps at list bounds
-
-### Task 1.5: Command Palette Renderer
-
-**Description**: Create `render_command_palette()` in `ui/mod.rs` and add it to the overlay match in `render()`.
-
-**Files**: `src/ui/mod.rs`
-
-**Acceptance Criteria**:
-- [ ] Centered overlay in top-third of screen, ~50 chars wide
-- [ ] Text input line with `"> "` prefix showing current query
-- [ ] Filtered command list with selected item highlighted (`theme.highlight`)
-- [ ] Each command shows `name` left-aligned, `shortcut` right-aligned in `theme.dim`
-- [ ] Max ~10 visible commands with scroll if more results
-- [ ] Theme-aware via `app.theme()`
-- [ ] `AppMode::CommandPalette` case added to overlay match in `render()`
-- [ ] Clear widget behind overlay (prevents bleed-through)
-
-### Task 1.6: Batch JSON Types
-
-**Description**: Create `src/cli/batch.rs` with `BatchFile` and `BatchOp` serde types. Register the module in `cli/mod.rs`.
-
-**Files**: `src/cli/batch.rs` (new), `src/cli/mod.rs`
-
-**Acceptance Criteria**:
-- [ ] `BatchFile` with `operations: Vec<BatchOp>`
-- [ ] `BatchOp` enum with `#[serde(tag = "op")]`: Draw, SetCell, Clear, Resize
-- [ ] Draw variant: tool, x, y, x1, y1, x2, y2, ch, fg, bg, filled (all optional except tool)
-- [ ] SetCell variant: x, y (required), ch, fg, bg (optional)
-- [ ] Clear variant: region (optional `[usize; 4]`)
-- [ ] Resize variant: width, height (required)
-- [ ] Test: valid JSON deserializes to correct BatchOp variants
-- [ ] Test: malformed JSON produces clear serde error
-
-### Task 1.7: Batch Executor
-
-**Description**: Implement `execute_op()` and `run_batch()` functions in `cli/batch.rs`. Each operation maps to existing `tools::*` functions.
-
-**Files**: `src/cli/batch.rs`
-
-**Acceptance Criteria**:
-- [ ] `execute_op()` dispatches draw/pencil to `tools::pencil()`, draw/line to `tools::line()`, etc.
-- [ ] `execute_op()` applies mutations directly to `project.canvas`
-- [ ] Per-operation errors caught and reported (don't halt batch)
-- [ ] `run_batch()` loads project once, executes all ops in order, saves atomically
-- [ ] `--dry-run` validates JSON and reports op count without executing
-- [ ] JSON output: `{"operations": N, "cells_modified": M, "errors": E, "file": "..."}`
-- [ ] Error details included when errors > 0
-- [ ] Helper functions: `parse_optional_color()`, `require_xy()`, `require_rect_coords()`
-
-### Task 1.8: Batch CLI Wiring
-
-**Description**: Add `Command::Batch` to the CLI enum and route it in `cli::run()`.
+**Description**: Convert `Export` command's `--output` required flag to a positional arg. Add hidden `--output` alias for backward compatibility. Add new PNG-related args (`--cell-size`, `--scale`, `--no-crop`).
 
 **Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] `Command::Batch { file, commands, dry_run }` variant with clap attributes
-- [ ] `--commands <path>` required argument for JSON file path
-- [ ] `--dry-run` optional flag
-- [ ] Routed to `batch::run_batch()` in `cli::run()`
-- [ ] `pub mod batch;` added to `cli/mod.rs`
+- [ ] `output: Option<String>` as positional arg (no `#[arg(long)]`)
+- [ ] `output_flag: Option<String>` with `#[arg(long = "output", hide = true)]` for backward compat
+- [ ] `cell_size: String` with `#[arg(long, default_value = "8x16")]`
+- [ ] `scale: u32` with `#[arg(long, default_value_t = 1)]`
+- [ ] `no_crop: bool` with `#[arg(long)]`
+- [ ] Dispatch merges `output.or(output_flag)` with clear error if both missing
 
-### Task 1.9: Batch Tests
+### Task 1.3: Import Command Normalization
 
-**Description**: Comprehensive unit tests for batch operations.
+**Description**: Convert `Import` command's `--output` required flag to a positional arg with hidden flag alias.
 
-**Files**: `src/cli/batch.rs` (test module)
+**Files**: `src/cli/mod.rs`
 
 **Acceptance Criteria**:
-- [ ] Test: pencil op modifies expected cell
-- [ ] Test: rect op draws expected outline
-- [ ] Test: fill op floods connected region
-- [ ] Test: line op draws between two points
-- [ ] Test: set_cell sets ch/fg/bg directly
-- [ ] Test: clear region resets specified cells
-- [ ] Test: clear full resets all cells
-- [ ] Test: resize changes canvas dimensions
-- [ ] Test: unknown tool name produces error, doesn't halt
-- [ ] Test: multi-op ordering — later ops see state from earlier ops
-- [ ] Test: empty operations array → 0 cells modified
-- [ ] Test: dry_run does not modify canvas
-- [ ] All 285+ existing tests still pass
+- [ ] `output: Option<String>` as positional arg
+- [ ] `output_flag: Option<String>` with `#[arg(long = "output", hide = true)]`
+- [ ] Dispatch merges `output.or(output_flag)` with clear error if both missing
+
+### Task 1.4: Batch Command Normalization
+
+**Description**: Convert `Batch` command's `--commands` required flag to a positional arg. No backward compat alias needed (newer command, Approach B per SDD).
+
+**Files**: `src/cli/mod.rs`
+
+**Acceptance Criteria**:
+- [ ] `commands: String` as positional arg (no `#[arg(long)]`)
+- [ ] Existing `--dry-run` flag unchanged
+- [ ] Routing to `batch::run_batch()` unchanged
+
+### Task 1.5: Palette Export Normalization
+
+**Description**: Convert `PaletteAction::Export`'s `--output` required flag to a positional arg. No backward compat alias (Approach B).
+
+**Files**: `src/cli/mod.rs`
+
+**Acceptance Criteria**:
+- [ ] `output: String` as positional arg (no `#[arg(long)]`)
+- [ ] `name` remains first positional, `output` becomes second positional
+
+### Task 1.6: Auto-Format Detection
+
+**Description**: Implement `detect_format()` function in `src/cli/preview.rs` that infers format from output file extension when `--format auto`.
+
+**Files**: `src/cli/preview.rs`
+
+**Acceptance Criteria**:
+- [ ] `detect_format(output, explicit)` function implemented
+- [ ] `.png` → `PreviewFormat::Png`
+- [ ] `.json` → `PreviewFormat::Json`
+- [ ] `.txt` → `PreviewFormat::Plain`
+- [ ] Anything else → `PreviewFormat::Ansi` (default fallback)
+- [ ] Explicit format (not Auto) bypasses detection
+- [ ] `export_to_file()` calls `detect_format()` before dispatching
+
+### Task 1.7: Undo/Clear Help Text
+
+**Description**: Update doc comments on `Undo` and `Clear` command variants to document the linear undo model and clear's destructive behavior.
+
+**Files**: `src/cli/mod.rs`
+
+**Acceptance Criteria**:
+- [ ] `Undo` doc comment explains linear model and overlap behavior
+- [ ] `Clear` doc comment warns about destructive nature and undo limitations
+- [ ] Both visible in `kakukuma undo --help` and `kakukuma clear --help`
+
+### Task 1.8: CLI Normalization Tests
+
+**Description**: Unit tests validating positional args work and backward-compatible flags still work.
+
+**Files**: `src/cli/mod.rs` (test module)
+
+**Acceptance Criteria**:
+- [ ] Test: `export FILE OUTPUT --format plain` works (positional output)
+- [ ] Test: `export FILE --output OUTPUT --format plain` still works (flag compat)
+- [ ] Test: `import IMAGE OUTPUT` works (positional output)
+- [ ] Test: `import IMAGE --output OUTPUT` still works (flag compat)
+- [ ] Test: `batch FILE COMMANDS` works (positional commands)
+- [ ] Test: auto-format detects `.png` as PNG
+- [ ] Test: auto-format detects `.txt` as plain
+- [ ] Test: auto-format falls back to ANSI for unknown extension
+- [ ] All 356 existing tests pass
 
 ---
 
-## Sprint 2: Reference Layer + Integration Polish
+## Sprint 2: PNG Export Engine
 
-**Goal**: Deliver the reference layer (TUI + CLI, project v6) and ensure all three features integrate cleanly.
+**Goal**: Implement the `to_png()` rendering function with full block character support (all 20 chars), shade dithering, fractional fills, auto-crop, scaling, and wire it through the CLI. This sprint delivers the image export capability.
 
-### Task 2.1: Project File v6
+### Task 2.1: Core to_png Function
 
-**Description**: Add `reference_image: Option<String>` to the `Project` struct with serde attributes for backward compatibility. Update version handling.
+**Description**: Implement `to_png()` in `src/export.rs` with the rendering pipeline: bounding box → pixel grid → cell rendering → scale.
 
-**Files**: `src/project.rs`
-
-**Acceptance Criteria**:
-- [x] `reference_image: Option<String>` field with `#[serde(skip_serializing_if = "Option::is_none")]` and `#[serde(default)]`
-- [x] `save_to_file`: sets version to 6 when `reference_image.is_some()`, keeps 5 otherwise
-- [x] `load_from_file`: accepts versions up to 6
-- [x] `Project::new()` initializes `reference_image: None`
-- [x] Test: v6 project roundtrip (save with reference → load → path preserved)
-- [x] Test: v5 project loads with `reference_image == None`
-- [x] Test: v5 project without reference saves as v5 (no version bump)
-
-### Task 2.2: Reference Layer Type + Image Loading
-
-**Description**: Add `ReferenceLayer` struct and `load_reference()` method to `App`. Pre-processes image into `Vec<Vec<Option<Rgb>>>` color grid.
-
-**Files**: `src/app.rs`
+**Files**: `src/export.rs`
 
 **Acceptance Criteria**:
-- [x] `ReferenceLayer` struct: `colors`, `image_path`, `brightness`, `visible`
-- [x] `reference_layer: Option<ReferenceLayer>` field in App, initialized to None
-- [x] `load_reference()` opens image, resizes to canvas dimensions, extracts RGB colors
-- [x] Transparent pixels (alpha < 128) stored as None
-- [x] On project load: if `reference_image.is_some()`, resolve path relative to project dir and call `load_reference()`
-- [x] If image file missing on load: set reference to None, show warning (don't crash)
-- [x] Test: dim_color at brightness 0/1/2 produces expected values
+- [ ] `pub fn to_png(canvas, cell_w, cell_h, scale, crop) -> image::RgbaImage` signature
+- [ ] Uses existing `bounding_box()` when `crop` is true
+- [ ] Creates `RgbaImage::new(region_w * cell_w, region_h * cell_h)`
+- [ ] Iterates cells in region, calls `render_cell_to_pixels()` for each
+- [ ] If `scale > 1`, upscales with `image::imageops::resize()` + `FilterType::Nearest`
+- [ ] Scale capped at 8 (reject >8)
 
-### Task 2.3: Reference CLI Command
+### Task 2.2: Block Character Pixel Rendering
 
-**Description**: Add `Command::Reference` to CLI for setting and clearing reference images.
+**Description**: Implement `render_cell_to_pixels()` that fills a cell's pixel block based on its character type. Handles all 5 primary block characters.
 
-**Files**: `src/cli/mod.rs`
-
-**Acceptance Criteria**:
-- [x] `Command::Reference { file, image, clear }` with clap attributes
-- [x] `kakukuma reference <file> <image>` sets reference_image and saves
-- [x] `kakukuma reference <file> --clear` removes reference_image and saves
-- [x] Image path stored relative to project file directory
-- [x] Validates image file exists before setting
-- [x] JSON output: `{"reference": "photo.png", "file": "art.kaku"}` or `{"reference": null, ...}`
-- [x] Atomic save via existing `atomic_save()` pattern
-
-### Task 2.4: Reference Rendering in Editor
-
-**Description**: Modify `ui/editor.rs` to show reference layer colors behind transparent canvas cells. Works at all zoom levels.
-
-**Files**: `src/ui/editor.rs`
+**Files**: `src/export.rs`
 
 **Acceptance Criteria**:
-- [x] New `grid_or_reference_bg()` function replaces `grid_bg()` for empty cells
-- [x] Reference colors show through transparent cells at dimmed brightness
-- [x] Opaque cells fully occlude reference
-- [x] `resolve_half_block_for_display` passes reference layer
-- [x] Works at zoom 1x, 2x, and 4x (half-block zoom)
-- [x] All colors go through `Rgb::to_ratatui()` — no `Color::Rgb()` leaks
-- [x] Render signature changes: `editor::render()` accepts `Option<&ReferenceLayer>`
-- [x] `ui/mod.rs` passes `app.reference_layer.as_ref()` to editor
+- [ ] `render_cell_to_pixels(img, cell, px, py, cw, ch)` function
+- [ ] `█` (FULL_BLOCK): entire block filled with fg color
+- [ ] `▀` (UPPER_HALF): top half fg, bottom half bg/transparent
+- [ ] `▄` (LOWER_HALF): bottom half fg, top half bg/transparent
+- [ ] `▌` (LEFT_HALF): left half fg, right half bg/transparent
+- [ ] `▐` (RIGHT_HALF): right half fg, left half bg/transparent
+- [ ] Space/empty: fill with bg, or transparent if no bg
+- [ ] Any other printable char: fill entire block with fg (simplified)
+- [ ] Color mapping: `Some(Rgb)` → `Rgba([r,g,b,255])`, `None` → `Rgba([0,0,0,0])`
 
-### Task 2.5: Reference Toggle + Brightness via Command Palette
+### Task 2.3: Shade Dither Patterns
 
-**Description**: Add "Toggle Reference" and "Reference Brightness" commands to the palette registry. Wire brightness cycling.
+**Description**: Implement `shade_pixel()` function for the 3 shade characters using repeating dither patterns.
 
-**Files**: `src/app.rs`
-
-**Acceptance Criteria**:
-- [x] "Toggle Reference" command in COMMANDS array — toggles `reference_layer.visible`
-- [x] "Reference Brightness" command — cycles brightness 0→1→2→0
-- [x] Both commands gracefully no-op when no reference loaded
-- [x] Status message shows current brightness level after cycling
-
-### Task 2.6: Integration Testing + Regression Check
-
-**Description**: End-to-end validation of all three features working together. Ensure no regressions.
-
-**Files**: Various (test execution only)
+**Files**: `src/export.rs`
 
 **Acceptance Criteria**:
-- [x] All 285+ existing tests pass
-- [x] New tests bring total to 305+
-- [x] `cargo clippy` — no new warnings
-- [x] Command palette opens/closes correctly in TUI
-- [x] Batch command executes multi-op JSON file
-- [x] Reference layer renders behind canvas in TUI (manual visual check)
-- [x] Project v5 loads without issues
-- [x] Project v6 roundtrip with reference image
+- [ ] `shade_pixel(x, y, shade) -> bool` function
+- [ ] `░` (SHADE_LIGHT): ~25% fg density using `(x + y) % 4 == 0`
+- [ ] `▒` (SHADE_MEDIUM): ~50% fg density using `(x + y) % 2 == 0` checkerboard
+- [ ] `▓` (SHADE_DARK): ~75% fg density using `(x + y) % 4 != 0`
+- [ ] Integrated into `render_cell_to_pixels()` dispatch
+
+### Task 2.4: Fractional Fill Rendering
+
+**Description**: Implement `vertical_fraction()` and `horizontal_fraction()` for the 12 fractional block characters.
+
+**Files**: `src/export.rs`
+
+**Acceptance Criteria**:
+- [ ] `vertical_fraction(ch) -> f32` for `▁▂▃▅▆▇` (1/8 through 7/8)
+- [ ] `horizontal_fraction(ch) -> f32` for `▉▊▋▍▎▏` (7/8 through 1/8)
+- [ ] Vertical: pixel is fg when `y_in_cell >= cell_h * (1.0 - fraction)` (fills from bottom)
+- [ ] Horizontal: pixel is fg when `x_in_cell < cell_w * fraction` (fills from left)
+- [ ] Integrated into `render_cell_to_pixels()` dispatch
+
+### Task 2.5: CLI Routing + Cell Size Parsing
+
+**Description**: Add `PreviewFormat::Png` case to `export_to_file()` in `src/cli/preview.rs`. Implement `parse_cell_size()` for the `--cell-size` argument.
+
+**Files**: `src/cli/preview.rs`
+
+**Acceptance Criteria**:
+- [ ] `parse_cell_size("8x16") -> Ok((8, 16))` function
+- [ ] Rejects 0 or >64 for either dimension
+- [ ] Rejects non-numeric or missing `x` separator
+- [ ] `PreviewFormat::Png` case calls `export::to_png()` and `img.save()`
+- [ ] JSON output: `{"exported": "...", "format": "png", "width": N, "height": N, "cell_size": "WxH"}`
+- [ ] PNG export args (`cell_size`, `scale`, `no_crop`) threaded from Command to export_to_file
+
+### Task 2.6: PNG Export Tests
+
+**Description**: Comprehensive tests for the PNG rendering engine covering all character types, colors, transparency, crop, and scale.
+
+**Files**: `src/export.rs` (test module)
+
+**Acceptance Criteria**:
+- [ ] Test: empty canvas produces fully transparent PNG
+- [ ] Test: single cell with `█` fills entire cell block with fg
+- [ ] Test: `▀` fills top half fg, bottom half bg/transparent
+- [ ] Test: `▄` fills bottom half fg, top half bg/transparent
+- [ ] Test: `▌` fills left half fg, right half bg/transparent
+- [ ] Test: `▐` fills right half fg, left half bg/transparent
+- [ ] Test: `░` produces ~25% fg pixel density
+- [ ] Test: `▒` produces ~50% fg pixel density
+- [ ] Test: `▓` produces ~75% fg pixel density
+- [ ] Test: `▂` (LOWER_1_4) fills bottom quarter with fg
+- [ ] Test: `▊` (LEFT_3_4) fills left three-quarters with fg
+- [ ] Test: auto-crop exports only bounding box region
+- [ ] Test: no-crop exports full canvas dimensions
+- [ ] Test: scale 2x produces doubled dimensions with nearest-neighbor
+- [ ] Test: cells with `bg: None` have alpha=0 pixels
+- [ ] Test: custom cell-size 4x8 produces smaller pixel blocks
+- [ ] Test: cell_size parsing rejects "0x16" and "abc"
+- [ ] All 356+ existing tests pass (plus new sprint-1 tests)
 
 ---
 
@@ -262,7 +235,7 @@
 
 | Risk | Sprint | Mitigation |
 |------|--------|------------|
-| `tools::flood_fill` signature differs from SDD assumption | Sprint 1 | Verify during Task 1.7, adapt batch executor if needed |
-| Spacebar conflicts with canvas cursor | Sprint 1 | Context check in Task 1.4, same pattern as S-key dual behavior |
-| Reference image path breaks on different CWD | Sprint 2 | Store relative to project dir, resolve on load (Task 2.3) |
-| Reference rendering performance | Sprint 2 | Pre-process to color grid on load, not per-frame (Task 2.2) |
+| Clap rejects two fields targeting same `--output` name | Sprint 1 | Approach A uses `#[arg(long = "output")]` on hidden field — test first with `try_parse_from` |
+| `image::imageops::resize` not available with current features | Sprint 2 | Already used by import.rs for reference layer — confirmed available |
+| Block character constants not accessible from export.rs | Sprint 2 | Constants in `src/cell.rs` are `pub` — import directly |
+| Large canvas + high scale causes OOM | Sprint 2 | Cap scale at 8, validate cell_size max 64x64 (per SDD §8) |

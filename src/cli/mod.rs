@@ -93,14 +93,25 @@ pub enum Command {
         /// Path to .kaku file
         file: String,
         /// Output file path
-        #[arg(long)]
-        output: String,
-        /// Export format
-        #[arg(long, default_value = "ansi")]
+        output: Option<String>,
+        /// Output file path (deprecated, use positional)
+        #[arg(long = "output", hide = true)]
+        output_flag: Option<String>,
+        /// Export format (auto-detects from file extension when "auto")
+        #[arg(long, default_value = "auto")]
         format: PreviewFormat,
         /// Color depth for ANSI output
         #[arg(long, default_value = "truecolor")]
         color_format: CliColorFormat,
+        /// Cell size for PNG export (WxH pixels)
+        #[arg(long, default_value = "8x16")]
+        cell_size: String,
+        /// Integer scale factor for PNG export
+        #[arg(long, default_value_t = 1)]
+        scale: u32,
+        /// Export full canvas (skip auto-crop)
+        #[arg(long)]
+        no_crop: bool,
     },
 
     /// Compare two canvas files
@@ -120,7 +131,12 @@ pub enum Command {
         file: String,
     },
 
-    /// Undo last CLI operation
+    /// Undo last CLI operation.
+    ///
+    /// Uses a linear model: new operations discard redo history.
+    /// Operations that overlap (e.g., clear over a drawn rect) store
+    /// only the cleared state — undoing the clear restores the clear's
+    /// snapshot, not the original drawn content.
     Undo {
         /// Path to .kaku file
         file: String,
@@ -162,7 +178,11 @@ pub enum Command {
         size: Option<(usize, usize)>,
     },
 
-    /// Clear canvas (reset all cells to default)
+    /// Clear canvas (reset all cells to default).
+    ///
+    /// Warning: clear is destructive. If clear overlaps with prior
+    /// operations, undoing the clear may not fully restore all
+    /// previous content. Consider exporting a backup first.
     Clear {
         /// Path to .kaku file
         file: String,
@@ -176,8 +196,10 @@ pub enum Command {
         /// Path to image file (PNG, JPEG, etc.)
         image: String,
         /// Path to output .kaku file
-        #[arg(long)]
-        output: String,
+        output: Option<String>,
+        /// Path to output .kaku file (deprecated, use positional)
+        #[arg(long = "output", hide = true)]
+        output_flag: Option<String>,
         /// Canvas width (8-128)
         #[arg(long, default_value_t = 48)]
         width: usize,
@@ -200,7 +222,6 @@ pub enum Command {
         /// Path to .kaku file
         file: String,
         /// Path to JSON commands file
-        #[arg(long)]
         commands: String,
         /// Validate JSON without executing
         #[arg(long)]
@@ -313,11 +334,13 @@ pub struct DrawOpts {
     pub no_log: bool,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
 pub enum PreviewFormat {
+    Auto,
     Ansi,
     Json,
     Plain,
+    Png,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -348,7 +371,7 @@ pub enum PaletteAction {
     /// Export palette to file
     Export {
         name: String,
-        #[arg(long)]
+        /// Output file path
         output: String,
     },
     /// Add color to palette
@@ -499,15 +522,19 @@ pub fn run(cmd: Command) -> io::Result<()> {
         Command::Undo { file, count } => history_cmd::undo(&file, count),
         Command::Redo { file, count } => history_cmd::redo(&file, count),
         Command::History { file, full } => history_cmd::history(&file, full),
-        Command::Export { file, output, format, color_format } => {
-            preview::export_to_file(&file, &output, &format, &color_format)
+        Command::Export { file, output, output_flag, format, color_format, cell_size, scale, no_crop } => {
+            let out = output.or(output_flag)
+                .unwrap_or_else(|| cli_error("Output path required. Usage: kakukuma export <FILE> <OUTPUT>"));
+            preview::export_to_file(&file, &out, &format, &color_format, &cell_size, scale, no_crop)
         }
         Command::Resize { file, width, height, size } => {
             cmd_resize(&file, width, height, size)
         }
         Command::Clear { file, region } => cmd_clear(&file, region),
-        Command::Import { image, output, width, height, quantize } => {
-            cmd_import(&image, &output, width, height, &quantize)
+        Command::Import { image, output, output_flag, width, height, quantize } => {
+            let out = output.or(output_flag)
+                .unwrap_or_else(|| cli_error("Output path required. Usage: kakukuma import <IMAGE> <OUTPUT>"));
+            cmd_import(&image, &out, width, height, &quantize)
         }
         Command::Palette { action } => palette_cmd::run(action),
         Command::Batch { file, commands, dry_run } => batch::run_batch(&file, &commands, dry_run),

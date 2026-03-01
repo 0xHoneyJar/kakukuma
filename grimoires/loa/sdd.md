@@ -1,753 +1,463 @@
-# SDD: Creative Power Tools — Command Palette, Reference Layer, Batch Draw
+# SDD: CLI Polish & Image Export
 
-> **Cycle**: 018
-> **Created**: 2026-02-28
-> **Status**: Draft
+> **Cycle**: 019
+> **Created**: 2026-03-01
 > **PRD**: grimoires/loa/prd.md
 
 ---
 
 ## 1. Executive Summary
 
-Add three features to Kakukuma that unlock human discoverability (command palette), artist productivity (reference layer), and agent throughput (batch draw). All three build on the existing architecture without structural changes — they add new AppMode variants, new CLI commands, and new rendering logic, but do not modify existing module boundaries or data flows.
-
-**Key constraint**: Only `Color::Indexed(n)` — never `Color::Rgb()`. The reference layer renders via the same `Rgb::to_ratatui()` path as all other colors.
+Two focused changes to the kakukuma CLI: (1) normalize 4 commands that use required `--output`/`--commands` flags to positional arguments with backward-compatible aliases, and (2) add PNG image export via the existing `image` crate. No new files created — all changes are to existing modules. No TUI changes.
 
 ---
 
-## 2. System Architecture
+## 2. Architecture Overview
 
-### Current Architecture (post-cycle-017)
+### Files Modified
 
-```
-lib.rs (11 public modules)
-  ├── canvas.rs, cell.rs, export.rs, history.rs, import.rs
-  ├── oplog.rs, palette.rs, project.rs, symmetry.rs, theme.rs, tools.rs
+| File | Changes |
+|------|---------|
+| `src/cli/mod.rs` | Refactor 4 Command variants (Export, Import, Batch, Reference) + PaletteAction::Export clap attributes. Add PNG format variant. Update help text for undo/clear. |
+| `src/export.rs` | Add `to_png()` function with block character pixel rendering. Add `CellSize` struct. |
+| `src/cli/preview.rs` | Route PNG format to new `to_png()` in export_to_file. |
 
-main.rs (binary — 4 modules + re-exports)
-  ├── app.rs          (App struct, AppMode enum, state machine)
-  ├── cli/            (CLI subcommands — draw, inspect, preview, etc.)
-  ├── input.rs        (crossterm event dispatch, CanvasArea)
-  └── ui/             (ratatui rendering — editor, toolbar, palette, statusbar, dialogs)
-```
+### Files NOT Modified
 
-### Changes for Cycle 018
-
-```
-lib.rs — UNCHANGED (no new public modules)
-
-main.rs modules:
-  app.rs     — ADD: AppMode::CommandPalette, reference/palette state fields
-  cli/mod.rs — ADD: Command::Batch, Command::Reference
-  cli/batch.rs — NEW: batch JSON parser and executor
-  input.rs   — ADD: handle_command_palette(), Spacebar dispatch
-  ui/mod.rs  — ADD: render_command_palette(), render overlays
-  ui/editor.rs — MODIFY: reference layer rendering behind canvas cells
-```
-
-No changes to lib.rs modules. The batch command reuses existing `tools::*` functions from the library. The reference layer uses existing `import.rs` scaling logic for image loading.
+- `src/app.rs` — TUI unchanged
+- `src/input.rs` — TUI unchanged
+- `src/ui/` — TUI unchanged
+- `src/cell.rs` — Block constants unchanged
+- `src/import.rs` — Import unchanged
+- `src/project.rs` — Project format unchanged
+- `src/oplog.rs` — Undo logic unchanged
+- `src/history.rs` — Undo logic unchanged
+- `Cargo.toml` — `image` crate already has PNG encode support
 
 ---
 
-## 3. Component Design
+## 3. FR-1: CLI Argument Normalization
 
-### 3.1 Command Palette (FR-1)
+### 3.1 Current State
 
-#### 3.1.1 Command Registry
-
-A static registry of all editor commands. Each entry maps a name, category, keyboard shortcut hint, and an action closure.
+Four commands have required args behind `#[arg(long)]` flags:
 
 ```rust
-// src/app.rs (new types)
+// Export — current
+Export {
+    file: String,
+    #[arg(long)]        // REQUIRED flag
+    output: String,
+    #[arg(long, default_value = "ansi")]
+    format: PreviewFormat,
+    #[arg(long, default_value = "truecolor")]
+    color_format: CliColorFormat,
+}
 
-pub struct PaletteCommand {
-    pub name: &'static str,
-    pub category: &'static str,
-    pub shortcut: &'static str,
-    pub action: fn(&mut App),
+// Import — current
+Import {
+    image: String,
+    #[arg(long)]        // REQUIRED flag
+    output: String,
+    #[arg(long, default_value_t = 48)]
+    width: usize,
+    #[arg(long, default_value_t = 32)]
+    height: usize,
+    #[arg(long, default_value = "256")]
+    quantize: CliColorFormat,
+}
+
+// Batch — current
+Batch {
+    file: String,
+    #[arg(long)]        // REQUIRED flag
+    commands: String,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+// PaletteAction::Export — current
+Export {
+    name: String,
+    #[arg(long)]        // REQUIRED flag
+    output: String,
 }
 ```
 
-The registry is a `const` array built at compile time. ~30 commands across 9 categories:
+### 3.2 Target State
 
-| Category | Commands | Count |
-|----------|----------|-------|
-| Tools | Pencil, Eraser, Line, Rectangle, Fill, Eyedropper | 6 |
-| Canvas | New Canvas, Resize Canvas, Clear Canvas, Import Image | 4 |
-| File | Save, Save As, Open, Export | 4 |
-| Edit | Undo, Redo | 2 |
-| View | Zoom In, Zoom Out, Toggle Grid, Cycle Theme | 4 |
-| Character | Block Picker, Shade Cycle, Character Input | 3 |
-| Color | Hex Color Input, Color Sliders | 2 |
-| Symmetry | Symmetry Off, Horizontal, Vertical, Quad | 4 |
-| Help | Show Help, Quit | 2 |
+Convert required flags to positional args. Use clap's `alias` to keep old `--output`/`--commands` working.
 
-**Total**: ~31 commands
-
-Each `action` is a simple function pointer: `fn(&mut App)`. Example:
 ```rust
-PaletteCommand {
-    name: "Pencil",
-    category: "Tools",
-    shortcut: "P",
-    action: |app| { app.active_tool = ToolKind::Pencil; app.cancel_tool(); },
+// Export — after
+Export {
+    /// Path to .kaku file
+    file: String,
+    /// Output file path
+    output: String,                          // Now positional
+    /// Export format
+    #[arg(long, default_value = "auto")]     // Changed default to "auto"
+    format: PreviewFormat,
+    /// Color depth for ANSI output
+    #[arg(long, default_value = "truecolor")]
+    color_format: CliColorFormat,
+    /// Cell size for PNG export (WxH pixels)
+    #[arg(long, default_value = "8x16")]
+    cell_size: String,
+    /// Integer scale factor for PNG export
+    #[arg(long, default_value_t = 1)]
+    scale: u32,
+    /// Export full canvas (skip auto-crop)
+    #[arg(long)]
+    no_crop: bool,
+}
+
+// Import — after
+Import {
+    /// Path to image file (PNG, JPEG, etc.)
+    image: String,
+    /// Path to output .kaku file
+    output: String,                          // Now positional
+    #[arg(long, default_value_t = 48)]
+    width: usize,
+    #[arg(long, default_value_t = 32)]
+    height: usize,
+    #[arg(long, default_value = "256")]
+    quantize: CliColorFormat,
+}
+
+// Batch — after
+Batch {
+    /// Path to .kaku file
+    file: String,
+    /// Path to JSON commands file
+    commands: String,                        // Now positional
+    #[arg(long)]
+    dry_run: bool,
+}
+
+// PaletteAction::Export — after
+Export {
+    name: String,
+    /// Output file path
+    output: String,                          // Now positional
 }
 ```
 
-#### 3.1.2 Fuzzy Matching
+### 3.3 Backward Compatibility Strategy
 
-Simple substring-based fuzzy match — no external crate needed.
+Clap does not natively support "positional OR flag" for the same field. Two approaches:
+
+**Approach A (Recommended): Optional positional + optional flag, validate one is present**
 
 ```rust
-fn fuzzy_match(query: &str, target: &str) -> bool {
-    let query = query.to_lowercase();
-    let target = target.to_lowercase();
-    // All query chars must appear in target in order
-    let mut target_chars = target.chars();
-    for qc in query.chars() {
-        if qc == ' ' { continue; } // spaces are separators, skip
-        loop {
-            match target_chars.next() {
-                Some(tc) if tc == qc => break,
-                Some(_) => continue,
-                None => return false,
-            }
-        }
+Export {
+    file: String,
+    /// Output file path
+    output: Option<String>,
+    /// Output file path (deprecated, use positional)
+    #[arg(long = "output", hide = true)]
+    output_flag: Option<String>,
+    // ...
+}
+```
+
+Then in the dispatch:
+```rust
+let output = output.or(output_flag)
+    .unwrap_or_else(|| cli_error("Output path required"));
+```
+
+**Approach B: Just make it positional, accept the breaking change**
+
+Since the only consumers are agents (which adapt) and the tool is pre-1.0, simply change to positional. Document the change.
+
+**Decision**: Use Approach A for `export` and `import` (most likely to have existing scripts). Use Approach B for `batch` and `palette export` (newer commands with fewer existing users).
+
+### 3.4 Auto-Format Detection for Export
+
+When `--format` is `"auto"` (new default), detect format from output file extension:
+
+```rust
+fn detect_format(output: &str, explicit: &PreviewFormat) -> PreviewFormat {
+    if *explicit != PreviewFormat::Auto {
+        return explicit.clone();
     }
-    true
-}
-```
-
-This handles "sav" → "Save", "sym h" → "Symmetry Horizontal" naturally.
-
-#### 3.1.3 App State
-
-New fields in `App` struct:
-
-```rust
-// Command palette state
-pub palette_query: String,           // Current search text
-pub palette_filtered: Vec<usize>,    // Indices into COMMANDS registry
-pub palette_selected: usize,         // Cursor in filtered list
-```
-
-New `AppMode` variant:
-
-```rust
-AppMode::CommandPalette,
-```
-
-#### 3.1.4 Input Handling
-
-In `input.rs`, the Spacebar dispatch changes:
-
-```rust
-KeyCode::Char(' ') => {
-    if app.canvas_cursor_active {
-        // Existing behavior: draw at canvas cursor
-        let (x, y) = app.canvas_cursor;
-        // ... existing draw logic ...
-    } else {
-        // NEW: Open command palette
-        app.palette_query.clear();
-        app.palette_selected = 0;
-        app.palette_filtered = (0..COMMANDS.len()).collect();
-        app.mode = AppMode::CommandPalette;
+    match Path::new(output).extension().and_then(|e| e.to_str()) {
+        Some("png") => PreviewFormat::Png,
+        Some("json") => PreviewFormat::Json,
+        Some("txt") => PreviewFormat::Plain,
+        _ => PreviewFormat::Ansi,  // Default fallback
     }
 }
 ```
 
-New handler `handle_command_palette(app, key)`:
-- **Printable chars**: Append to `palette_query`, re-filter
-- **Backspace**: Remove last char from `palette_query`, re-filter
-- **Up/Down arrows**: Navigate `palette_selected`
-- **Enter**: Execute selected command's `action`, return to Normal
-- **Esc**: Dismiss, return to Normal
-
-#### 3.1.5 Rendering
-
-New function in `ui/mod.rs`: `render_command_palette(f, app, size)`.
-
-Layout: Centered overlay, top-third of screen, 50 chars wide, up to 12 rows.
-
+Add `Auto` and `Png` variants to `PreviewFormat` enum:
+```rust
+#[derive(Clone, ValueEnum)]
+pub enum PreviewFormat {
+    Auto,
+    Ansi,
+    Json,
+    Plain,
+    Png,
+}
 ```
-┌─────────── Command Palette ───────────┐
-│ > sym h_                              │
-│                                       │
-│   Symmetry Horizontal       Ctrl+1    │
-│ → Symmetry Vertical         Ctrl+2    │ ← selected
-│   Symmetry Quad             Ctrl+3    │
-│   Symmetry Off              Ctrl+0    │
-└───────────────────────────────────────┘
-```
-
-- First line: text input with cursor
-- Filtered commands below, max ~10 visible
-- Selected item highlighted with `theme.highlight`
-- Shortcut hints right-aligned in `theme.dim`
-- Theme-aware: uses `app.theme()` for all colors
 
 ---
 
-### 3.2 Reference Layer (FR-2)
+## 4. FR-2: PNG Image Export
 
-#### 3.2.1 Data Model
+### 4.1 Function Signature
 
-The reference layer is stored as pre-processed cell data, not a raw image. On load, the image is converted to a grid of `Rgb` background colors at canvas resolution.
+New function in `src/export.rs`:
 
 ```rust
-// src/app.rs (new types)
-
-pub struct ReferenceLayer {
-    /// Pre-processed background colors at canvas resolution.
-    /// Indexed [y][x]. Each cell is the dimmed reference color.
-    pub colors: Vec<Vec<Option<Rgb>>>,
-    /// Original image path (for project file persistence)
-    pub image_path: String,
-    /// Brightness level: 0=dim (25%), 1=medium (50%), 2=bright (75%)
-    pub brightness: u8,
-    /// Whether reference is currently visible
-    pub visible: bool,
-}
+pub fn to_png(
+    canvas: &Canvas,
+    cell_w: u32,
+    cell_h: u32,
+    scale: u32,
+    crop: bool,
+) -> image::RgbaImage
 ```
 
-New fields in `App`:
+### 4.2 Rendering Pipeline
 
-```rust
-pub reference_layer: Option<ReferenceLayer>,
+```
+Canvas cells → Bounding box (if crop) → Pixel grid → Block fill → Scale → RgbaImage
 ```
 
-#### 3.2.2 Image Processing
+1. **Compute region**: If `crop`, use existing `bounding_box()`. Otherwise full canvas.
+2. **Create image buffer**: `RgbaImage::new(region_w * cell_w, region_h * cell_h)`
+3. **For each cell in region**: Call `render_cell_to_pixels()` to fill the cell's pixel block
+4. **Scale**: If `scale > 1`, upscale with nearest-neighbor via `image::imageops::resize()` with `FilterType::Nearest`
+5. **Return**: The `RgbaImage` (caller saves to disk)
 
-Reuses existing `import.rs` image loading (the `image` crate is already a dependency). The reference layer does NOT use `import_image()` directly because that function produces `Cell` data with characters. Instead, we extract just the color data.
+### 4.3 Block Character Pixel Rendering
+
+Each cell occupies a `cell_w × cell_h` pixel block. The rendering depends on the character:
 
 ```rust
-// src/app.rs (new method)
+fn render_cell_to_pixels(
+    img: &mut RgbaImage,
+    cell: &Cell,
+    px: u32,    // pixel x origin
+    py: u32,    // pixel y origin
+    cw: u32,    // cell width in pixels
+    ch: u32,    // cell height in pixels
+)
+```
 
-impl App {
-    pub fn load_reference(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let img = image::open(path)
-            .map_err(|e| format!("Failed to load reference: {}", e))?;
-        let img = img.resize_exact(
-            self.canvas.width as u32,
-            self.canvas.height as u32,
-            image::imageops::FilterType::Lanczos3,
-        );
-        let mut colors = Vec::with_capacity(self.canvas.height);
-        for y in 0..self.canvas.height {
-            let mut row = Vec::with_capacity(self.canvas.width);
-            for x in 0..self.canvas.width {
-                let pixel = img.get_pixel(x as u32, y as u32);
-                let [r, g, b, a] = pixel.0;
-                if a < 128 {
-                    row.push(None); // Transparent pixel
-                } else {
-                    row.push(Some(Rgb::new(r, g, b)));
-                }
-            }
-            colors.push(row);
-        }
-        self.reference_layer = Some(ReferenceLayer {
-            colors,
-            image_path: path.to_string_lossy().to_string(),
-            brightness: 0, // Start dim
-            visible: true,
-        });
-        Ok(())
+**Rendering rules by character type:**
+
+| Character | Pixel Fill Rule |
+|-----------|----------------|
+| `█` (FULL) | Fill entire block with fg color |
+| `▀` (UPPER_HALF) | Top half fg, bottom half bg (or transparent) |
+| `▄` (LOWER_HALF) | Bottom half fg, top half bg (or transparent) |
+| `▌` (LEFT_HALF) | Left half fg, right half bg (or transparent) |
+| `▐` (RIGHT_HALF) | Right half fg, left half bg (or transparent) |
+| `░` (SHADE_LIGHT) | 25% fg pixels, 75% bg pixels (dither pattern) |
+| `▒` (SHADE_MEDIUM) | 50% fg pixels, 50% bg pixels (checkerboard) |
+| `▓` (SHADE_DARK) | 75% fg pixels, 25% bg pixels (inverse dither) |
+| `▁` (LOWER_1_8) | Bottom 1/8 fg, rest bg |
+| `▂` (LOWER_1_4) | Bottom 1/4 fg, rest bg |
+| `▃` (LOWER_3_8) | Bottom 3/8 fg, rest bg |
+| `▅` (LOWER_5_8) | Bottom 5/8 fg, rest bg |
+| `▆` (LOWER_3_4) | Bottom 3/4 fg, rest bg |
+| `▇` (LOWER_7_8) | Bottom 7/8 fg, rest bg |
+| `▉` (LEFT_7_8) | Left 7/8 fg, rest bg |
+| `▊` (LEFT_3_4) | Left 3/4 fg, rest bg |
+| `▋` (LEFT_5_8) | Left 5/8 fg, rest bg |
+| `▍` (LEFT_3_8) | Left 3/8 fg, rest bg |
+| `▎` (LEFT_1_4) | Left 1/4 fg, rest bg |
+| `▏` (LEFT_1_8) | Left 1/8 fg, rest bg |
+| ` ` (space/empty) | Fill with bg color, or transparent if no bg |
+| Any other char | Fill entire block with fg color (simplified) |
+
+**Color mapping:**
+- `fg: Some(Rgb)` → `Rgba([r, g, b, 255])` — use raw RGB, NOT `to_ratatui()`
+- `bg: Some(Rgb)` → `Rgba([r, g, b, 255])`
+- `fg: None` or `bg: None` → `Rgba([0, 0, 0, 0])` (fully transparent)
+
+**Shade dither pattern:**
+```rust
+fn shade_pixel(x: u32, y: u32, shade: char) -> bool {
+    // Returns true if this pixel should be fg color
+    let pattern = (x + y) % 4;  // 4x4 tile
+    match shade {
+        SHADE_LIGHT  => pattern == 0,                    // 25% fill
+        SHADE_MEDIUM => (x + y) % 2 == 0,               // 50% checkerboard
+        SHADE_DARK   => pattern != 0,                    // 75% fill
+        _ => false,
     }
 }
 ```
 
-#### 3.2.3 Brightness Dimming
+### 4.4 Fractional Fill Implementation
 
-Applied during rendering, not stored. The three levels scale RGB values:
-
-| Level | Label | Scale Factor |
-|-------|-------|-------------|
-| 0 | Dim | 25% (r/4, g/4, b/4) |
-| 1 | Medium | 50% (r/2, g/2, b/2) |
-| 2 | Bright | 75% (3r/4, 3g/4, 3b/4) |
-
+For vertical fractional fills (LOWER_1_8 through LOWER_7_8):
 ```rust
-fn dim_color(color: &Rgb, brightness: u8) -> Rgb {
-    let scale = match brightness {
-        0 => 4,  // divide by 4 = 25%
-        1 => 2,  // divide by 2 = 50%
-        _ => 4,  // 3/4 = 75% — use (r*3)/4
-    };
-    if brightness == 2 {
-        Rgb::new((color.r as u16 * 3 / 4) as u8,
-                 (color.g as u16 * 3 / 4) as u8,
-                 (color.b as u16 * 3 / 4) as u8)
-    } else {
-        Rgb::new(color.r / scale, color.g / scale, color.b / scale)
+fn vertical_fraction(ch: char) -> f32 {
+    match ch {
+        LOWER_1_8 => 1.0 / 8.0,
+        LOWER_1_4 => 2.0 / 8.0,
+        LOWER_3_8 => 3.0 / 8.0,
+        LOWER_HALF => 4.0 / 8.0,  // Included for completeness
+        LOWER_5_8 => 5.0 / 8.0,
+        LOWER_3_4 => 6.0 / 8.0,
+        LOWER_7_8 => 7.0 / 8.0,
+        _ => 0.0,
     }
 }
+// Pixel (x, y_in_cell) is fg if y_in_cell >= cell_h * (1.0 - fraction)
 ```
 
-#### 3.2.4 Canvas Rendering Integration
-
-In `ui/editor.rs`, the `resolve_half_block_for_display` function changes to check the reference layer when a cell is empty/transparent:
-
+For horizontal fractional fills (LEFT_1_8 through LEFT_7_8):
 ```rust
-// Current: empty cell → grid background
-// New: empty cell → reference color (if visible) → grid background (fallback)
-
-fn grid_or_reference_bg(
-    x: usize, y: usize, show_grid: bool, theme: &Theme,
-    reference: Option<&ReferenceLayer>,
-) -> Color {
-    if let Some(ref_layer) = reference {
-        if ref_layer.visible {
-            if let Some(Some(ref_color)) = ref_layer.colors.get(y).and_then(|row| row.get(x)) {
-                let dimmed = dim_color(ref_color, ref_layer.brightness);
-                return dimmed.to_ratatui(); // Uses Color::Indexed — safe
-            }
-        }
+fn horizontal_fraction(ch: char) -> f32 {
+    match ch {
+        LEFT_1_8 => 1.0 / 8.0,
+        LEFT_1_4 => 2.0 / 8.0,
+        LEFT_3_8 => 3.0 / 8.0,
+        LEFT_HALF => 4.0 / 8.0,
+        LEFT_5_8 => 5.0 / 8.0,
+        LEFT_3_4 => 6.0 / 8.0,
+        LEFT_7_8 => 7.0 / 8.0,
+        _ => 0.0,
     }
-    // Fallback: existing grid background
-    grid_bg(x, y, show_grid, theme)
 }
+// Pixel (x_in_cell, y) is fg if x_in_cell < cell_w * fraction
 ```
 
-This modifies `resolve_half_block_for_display` and the zoom-4 half-block renderer to pass the reference layer. The reference only shows through transparent cells — opaque cells occlude it completely.
+### 4.5 CLI Integration
 
-#### 3.2.5 Project File v6
-
-The `Project` struct gains an optional field:
+In `src/cli/preview.rs`, the `export_to_file()` function routes to `to_png()`:
 
 ```rust
-#[derive(Serialize, Deserialize)]
-pub struct Project {
-    pub version: u32,
-    pub name: String,
-    pub created_at: String,
-    pub modified_at: String,
-    pub color: Rgb,
-    pub symmetry: SymmetryMode,
-    pub canvas: Canvas,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
-    pub reference_image: Option<String>,  // Path to reference image
-}
-```
-
-Version handling:
-- `save_to_file`: If `reference_image.is_some()`, set version to 6. Otherwise, keep 5.
-- `load_from_file`: Accept versions up to 6. The `#[serde(default)]` on `reference_image` means v5 files load with `None`.
-- The reference `colors` grid is NOT serialized — it's rebuilt from the image path on project load.
-
-#### 3.2.6 CLI Command
-
-```rust
-Command::Reference {
-    file: String,           // .kaku project path
-    image: Option<String>,  // image path (None when --clear)
-    clear: bool,            // --clear flag
-}
-```
-
-Flow:
-1. Load project
-2. If `--clear`: set `project.reference_image = None`, save, done
-3. If image provided: validate image exists, set `project.reference_image = Some(path)`, save
-4. Output JSON: `{"reference": "photo.png", "file": "art.kaku"}` or `{"reference": null, "file": "art.kaku"}`
-
-#### 3.2.7 TUI Integration
-
-On project load in `app.rs`, if `project.reference_image.is_some()`, call `load_reference()` to pre-process the image into the color grid.
-
-Command palette adds two new commands:
-- "Toggle Reference" — toggles `reference_layer.visible`
-- "Reference Brightness" — cycles brightness 0→1→2→0
-
----
-
-### 3.3 Batch Draw (FR-3)
-
-#### 3.3.1 JSON Schema
-
-```rust
-// src/cli/batch.rs (new file)
-
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-pub struct BatchFile {
-    pub operations: Vec<BatchOp>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "op")]
-pub enum BatchOp {
-    #[serde(rename = "draw")]
-    Draw {
-        tool: String,
-        #[serde(default)]
-        x: Option<usize>,
-        #[serde(default)]
-        y: Option<usize>,
-        #[serde(default)]
-        x1: Option<usize>,
-        #[serde(default)]
-        y1: Option<usize>,
-        #[serde(default)]
-        x2: Option<usize>,
-        #[serde(default)]
-        y2: Option<usize>,
-        #[serde(default)]
-        ch: Option<char>,
-        #[serde(default)]
-        fg: Option<String>,
-        #[serde(default)]
-        bg: Option<String>,
-        #[serde(default)]
-        filled: Option<bool>,
-    },
-    #[serde(rename = "set_cell")]
-    SetCell {
-        x: usize,
-        y: usize,
-        #[serde(default)]
-        ch: Option<char>,
-        #[serde(default)]
-        fg: Option<String>,
-        #[serde(default)]
-        bg: Option<String>,
-    },
-    #[serde(rename = "clear")]
-    Clear {
-        #[serde(default)]
-        region: Option<[usize; 4]>,
-    },
-    #[serde(rename = "resize")]
-    Resize {
-        width: usize,
-        height: usize,
-    },
-}
-```
-
-The `#[serde(tag = "op")]` attribute makes serde parse `{"op": "draw", ...}` into `BatchOp::Draw { ... }` — the `op` field is the discriminant.
-
-#### 3.3.2 Executor
-
-```rust
-pub fn run_batch(file: &str, commands_path: &str, dry_run: bool) -> io::Result<()> {
-    // 1. Load project (single load)
-    let path = Path::new(file);
-    let mut project = load_project(file);
-
-    // 2. Parse JSON
-    let json_str = std::fs::read_to_string(commands_path)
-        .unwrap_or_else(|e| cli_error(&format!("Cannot read '{}': {}", commands_path, e)));
-    let batch: BatchFile = serde_json::from_str(&json_str)
-        .unwrap_or_else(|e| cli_error(&format!("Invalid batch JSON: {}", e)));
-
-    if dry_run {
-        // Validate only — report op count and exit
-        println!("{}", serde_json::json!({
-            "dry_run": true,
-            "operations": batch.operations.len(),
-            "valid": true,
-        }));
-        return Ok(());
-    }
-
-    // 3. Execute operations in order
-    let mut cells_modified: usize = 0;
-    let mut errors: usize = 0;
-    let mut error_details: Vec<serde_json::Value> = Vec::new();
-
-    for (i, op) in batch.operations.iter().enumerate() {
-        match execute_op(&mut project, op) {
-            Ok(modified) => cells_modified += modified,
-            Err(msg) => {
-                errors += 1;
-                error_details.push(serde_json::json!({
-                    "index": i,
-                    "error": msg,
-                }));
-            }
-        }
-    }
-
-    // 4. Atomic save
-    atomic_save(&mut project, path)?;
-
-    // 5. Report
-    let mut result = serde_json::json!({
-        "operations": batch.operations.len(),
-        "cells_modified": cells_modified,
-        "errors": errors,
-        "file": file,
+PreviewFormat::Png => {
+    let (cw, ch) = parse_cell_size(&cell_size)?;  // "8x16" → (8, 16)
+    let img = export::to_png(&project.canvas, cw, ch, scale, !no_crop);
+    img.save(&output).map_err(|e| {
+        io::Error::new(io::ErrorKind::Other, format!("PNG save failed: {}", e))
+    })?;
+    let json = serde_json::json!({
+        "exported": output,
+        "format": "png",
+        "width": img.width(),
+        "height": img.height(),
+        "cell_size": format!("{}x{}", cw, ch),
     });
-    if !error_details.is_empty() {
-        result["error_details"] = serde_json::json!(error_details);
-    }
-    println!("{}", serde_json::to_string(&result).unwrap());
-    Ok(())
+    println!("{}", serde_json::to_string(&json).unwrap());
 }
 ```
 
-#### 3.3.3 Operation Executor
-
-Each operation maps directly to existing `tools::*` functions:
+### 4.6 Cell Size Parsing
 
 ```rust
-fn execute_op(project: &mut Project, op: &BatchOp) -> Result<usize, String> {
-    match op {
-        BatchOp::Draw { tool, x, y, x1, y1, x2, y2, ch, fg, bg, filled } => {
-            let fg_rgb = parse_optional_color(fg)?;
-            let bg_rgb = parse_optional_color(bg)?;
-            let character = ch.unwrap_or(blocks::FULL);
-
-            let mutations = match tool.as_str() {
-                "pencil" => {
-                    let (x, y) = require_xy(x, y)?;
-                    tools::pencil(&project.canvas, x, y, character, fg_rgb, bg_rgb)
-                }
-                "eraser" => {
-                    let (x, y) = require_xy(x, y)?;
-                    tools::eraser(&project.canvas, x, y)
-                }
-                "line" => {
-                    let (x1, y1, x2, y2) = require_rect_coords(x1, y1, x2, y2)?;
-                    tools::line(&project.canvas, x1, y1, x2, y2, character, fg_rgb, bg_rgb)
-                }
-                "rect" => {
-                    let (x1, y1, x2, y2) = require_rect_coords(x1, y1, x2, y2)?;
-                    tools::rectangle(&project.canvas, x1, y1, x2, y2,
-                                     character, fg_rgb, bg_rgb, filled.unwrap_or(false))
-                }
-                "fill" => {
-                    let (x, y) = require_xy(x, y)?;
-                    tools::flood_fill(&project.canvas, x, y, character, fg_rgb, bg_rgb)
-                }
-                other => return Err(format!("Unknown tool: '{}'", other)),
-            };
-
-            // Apply mutations directly to canvas
-            for m in &mutations {
-                project.canvas.set(m.x, m.y, m.new);
-            }
-            Ok(mutations.len())
-        }
-        BatchOp::SetCell { x, y, ch, fg, bg } => {
-            let fg_rgb = parse_optional_color(fg)?;
-            let bg_rgb = parse_optional_color(bg)?;
-            let character = ch.unwrap_or(blocks::FULL);
-            project.canvas.set(*x, *y, Cell { ch: character, fg: fg_rgb, bg: bg_rgb });
-            Ok(1)
-        }
-        BatchOp::Clear { region } => {
-            match region {
-                Some([x1, y1, x2, y2]) => {
-                    let mut count = 0;
-                    for y in *y1..=*y2 {
-                        for x in *x1..=*x2 {
-                            project.canvas.set(x, y, Cell::default());
-                            count += 1;
-                        }
-                    }
-                    Ok(count)
-                }
-                None => {
-                    let count = project.canvas.width * project.canvas.height;
-                    project.canvas.clear();
-                    Ok(count)
-                }
-            }
-        }
-        BatchOp::Resize { width, height } => {
-            project.canvas.resize(*width, *height);
-            Ok(0) // resize doesn't "modify cells" in the mutation sense
-        }
+fn parse_cell_size(s: &str) -> Result<(u32, u32), String> {
+    let parts: Vec<&str> = s.split('x').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid cell size '{}', expected WxH (e.g., 8x16)", s));
     }
-}
-```
-
-#### 3.3.4 CLI Command
-
-```rust
-Command::Batch {
-    file: String,            // .kaku project path
-    commands: String,        // path to JSON operations file
-    dry_run: bool,           // --dry-run flag
-}
-```
-
-Added to `Command` enum and routed in `cli::run()`.
-
-#### 3.3.5 Helper Functions
-
-```rust
-fn parse_optional_color(hex: &Option<String>) -> Result<Option<Rgb>, String> {
-    match hex {
-        None => Ok(None),
-        Some(s) => parse_hex_color(s)
-            .map(Some)
-            .ok_or_else(|| format!("Invalid color: '{}'", s)),
+    let w = parts[0].parse::<u32>().map_err(|_| format!("Invalid width in '{}'", s))?;
+    let h = parts[1].parse::<u32>().map_err(|_| format!("Invalid height in '{}'", s))?;
+    if w == 0 || h == 0 || w > 64 || h > 64 {
+        return Err(format!("Cell size {}x{} out of range (1-64)", w, h));
     }
-}
-
-fn require_xy(x: &Option<usize>, y: &Option<usize>) -> Result<(usize, usize), String> {
-    match (x, y) {
-        (Some(x), Some(y)) => Ok((*x, *y)),
-        _ => Err("Missing required x,y coordinates".to_string()),
-    }
-}
-
-fn require_rect_coords(
-    x1: &Option<usize>, y1: &Option<usize>,
-    x2: &Option<usize>, y2: &Option<usize>,
-) -> Result<(usize, usize, usize, usize), String> {
-    match (x1, y1, x2, y2) {
-        (Some(x1), Some(y1), Some(x2), Some(y2)) => Ok((*x1, *y1, *x2, *y2)),
-        _ => Err("Missing required x1,y1,x2,y2 coordinates".to_string()),
-    }
+    Ok((w, h))
 }
 ```
 
 ---
 
-## 4. Data Architecture
+## 5. FR-3: Undo Documentation
 
-### Project File Format v6
+### 5.1 Changes to Help Text
 
-Only change: optional `reference_image` field.
+In `src/cli/mod.rs`, update the doc comments for `Undo` and `Clear`:
 
-```json
-{
-  "version": 6,
-  "name": "my-art",
-  "created_at": "2026-02-28T12:00:00Z",
-  "modified_at": "2026-02-28T12:30:00Z",
-  "color": {"r": 255, "g": 255, "b": 255},
-  "symmetry": "Off",
-  "canvas": { ... },
-  "reference_image": "reference.png"
+```rust
+/// Undo last CLI operation.
+///
+/// Undo uses a linear model: new operations discard redo history.
+/// Operations that overlap (e.g., clear over a drawn rect) store
+/// only the cleared state — undoing the clear restores the clear's
+/// snapshot, not the original drawn content.
+Undo {
+    file: String,
+    #[arg(long, default_value_t = 1)]
+    count: usize,
+}
+
+/// Clear canvas (reset all cells to default).
+///
+/// Warning: clear is destructive. If clear overlaps with prior
+/// operations, undoing the clear may not fully restore all
+/// previous content. Consider exporting a backup first.
+Clear {
+    file: String,
+    #[arg(long)]
+    region: Option<String>,
 }
 ```
-
-- `reference_image`: Optional. Path to image file, stored relative to the project file's directory.
-- Omitted entirely when `None` (via `skip_serializing_if`)
-- v5 files load normally — `#[serde(default)]` handles missing field
-- Version set to 6 only when `reference_image.is_some()`; otherwise stays 5
-- `load_from_file` accepts versions up to 6
-
-### No Other Data Changes
-
-- Canvas: `Vec<Vec<Cell>>` — unchanged
-- Oplog: JSON lines — unchanged
-- Palette: `.palette` JSON — unchanged
-
----
-
-## 5. File Changes Summary
-
-| File | Change Type | Description |
-|------|-------------|-------------|
-| `src/app.rs` | **Modified** | Add `AppMode::CommandPalette`, `PaletteCommand`, `ReferenceLayer`, new state fields, `load_reference()` |
-| `src/input.rs` | **Modified** | Add `handle_command_palette()`, modify Spacebar dispatch, add palette mode to dispatch table |
-| `src/ui/mod.rs` | **Modified** | Add `render_command_palette()`, add `CommandPalette` to overlay match |
-| `src/ui/editor.rs` | **Modified** | Pass reference layer to rendering, show reference behind transparent cells |
-| `src/project.rs` | **Modified** | Add `reference_image: Option<String>`, bump version logic, accept v6 |
-| `src/cli/mod.rs` | **Modified** | Add `Command::Batch` and `Command::Reference`, route to handlers |
-| `src/cli/batch.rs` | **New** | Batch JSON parser and executor |
-
-**Total**: 1 new file, 6 modified files.
-
-**Unchanged**: `lib.rs`, `canvas.rs`, `cell.rs`, `export.rs`, `history.rs`, `import.rs`, `oplog.rs`, `palette.rs`, `symmetry.rs`, `theme.rs`, `tools.rs`, `ui/toolbar.rs`, `ui/palette.rs`, `ui/statusbar.rs`, all existing `cli/` submodules.
 
 ---
 
 ## 6. Testing Strategy
 
-### Existing Tests (285+)
+### 6.1 CLI Normalization Tests
 
-All run unchanged. No modifications to library modules.
+| Test | Description |
+|------|-------------|
+| `test_export_positional_output` | `export FILE OUTPUT --format plain` works |
+| `test_export_flag_backward_compat` | `export FILE --output OUTPUT --format plain` still works |
+| `test_import_positional_output` | `import IMAGE OUTPUT` works |
+| `test_import_flag_backward_compat` | `import IMAGE --output OUTPUT` still works |
+| `test_batch_positional_commands` | `batch FILE COMMANDS` works |
+| `test_auto_format_png` | `export FILE out.png` auto-detects PNG format |
+| `test_auto_format_txt` | `export FILE out.txt` auto-detects plain format |
+| `test_auto_format_default_ansi` | `export FILE out.ans` falls back to ANSI |
 
-### New Tests
+### 6.2 PNG Export Tests
 
-| Test | Location | What It Validates |
-|------|----------|------------------|
-| Fuzzy matching | `app.rs` or `input.rs` tests | "sav" matches "Save", "sym h" matches "Symmetry Horizontal", empty matches all |
-| Command registry completeness | `app.rs` tests | Every AppMode/ToolKind/SymmetryMode reachable via a command |
-| Command palette open/close | `input.rs` tests | Spacebar opens when `!canvas_cursor_active`, Esc closes |
-| Project v6 roundtrip | `project.rs` tests | Save with reference → load → reference path preserved |
-| Project v5 backward compat | `project.rs` tests | v5 file loads with `reference_image == None` |
-| Reference brightness dimming | `app.rs` tests | dim_color at each level produces expected values |
-| Batch JSON parsing | `cli/batch.rs` tests | Valid JSON deserializes correctly, invalid JSON produces error |
-| Batch pencil operation | `cli/batch.rs` tests | Single pencil op modifies expected cell |
-| Batch rect operation | `cli/batch.rs` tests | Rect op produces expected cell mutations |
-| Batch fill operation | `cli/batch.rs` tests | Fill op floods expected region |
-| Batch set_cell | `cli/batch.rs` tests | Direct cell set with ch/fg/bg |
-| Batch clear (region) | `cli/batch.rs` tests | Region clear resets expected cells |
-| Batch clear (full) | `cli/batch.rs` tests | Full clear resets all cells |
-| Batch resize | `cli/batch.rs` tests | Canvas dimensions change |
-| Batch error handling | `cli/batch.rs` tests | Invalid tool name skipped, error counted, rest execute |
-| Batch dry-run | `cli/batch.rs` tests | No mutations when dry_run=true |
-| Batch empty file | `cli/batch.rs` tests | 0 operations, 0 cells modified |
-| Batch multi-op ordering | `cli/batch.rs` tests | Later ops see state from earlier ops |
+| Test | Description |
+|------|-------------|
+| `test_png_empty_canvas` | Empty canvas produces transparent PNG |
+| `test_png_single_cell` | One filled cell produces correct pixel block |
+| `test_png_full_block` | `█` fills entire cell with fg color |
+| `test_png_upper_half` | `▀` fills top half fg, bottom half bg/transparent |
+| `test_png_lower_half` | `▄` fills bottom half fg, top half bg/transparent |
+| `test_png_left_half` | `▌` fills left half fg, right half bg/transparent |
+| `test_png_right_half` | `▐` fills right half fg, left half bg/transparent |
+| `test_png_shade_light` | `░` produces ~25% fg pixel density |
+| `test_png_shade_medium` | `▒` produces ~50% fg pixel density |
+| `test_png_shade_dark` | `▓` produces ~75% fg pixel density |
+| `test_png_vertical_fraction` | `▂` (1/4) fills bottom quarter with fg |
+| `test_png_horizontal_fraction` | `▊` (3/4) fills left three-quarters with fg |
+| `test_png_auto_crop` | Only bounding box region exported (default) |
+| `test_png_no_crop` | Full canvas exported with `--no-crop` |
+| `test_png_scale_2x` | Scaled output is 2x dimensions, nearest-neighbor |
+| `test_png_transparent_bg` | Cells with `bg: None` have alpha=0 pixels |
+| `test_png_cell_size_custom` | Custom `--cell-size 4x8` produces smaller pixels |
 
-**Expected new test count**: ~18-20 tests. Total: 305+.
+### 6.3 Regression
 
----
-
-## 7. Implementation Order
-
-```
-Sprint 1: Command Palette + Batch Draw (CLI-focused)
-  1. Command registry (PaletteCommand array, ~31 entries)
-  2. Fuzzy matching function + tests
-  3. AppMode::CommandPalette + state fields
-  4. Input handler: Spacebar dispatch, palette key handling
-  5. UI renderer: render_command_palette()
-  6. cli/batch.rs: BatchFile/BatchOp types + serde
-  7. Batch executor: execute_op() using tools::*
-  8. Command::Batch CLI wiring + --dry-run
-  9. Batch tests (JSON parsing, execution, errors)
-
-Sprint 2: Reference Layer + Polish
-  1. Project v6: add reference_image field + version logic
-  2. Project v6 tests (roundtrip, backward compat)
-  3. ReferenceLayer type + load_reference() method
-  4. Reference CLI command (set/clear)
-  5. editor.rs: reference rendering behind transparent cells
-  6. Brightness dimming + toggle via command palette
-  7. Reference layer tests
-  8. Integration testing: all features end-to-end
-```
-
-Sprint 1 is larger but more parallelizable (palette and batch are independent). Sprint 2 builds on sprint 1's command palette to add reference toggle/brightness commands.
+All 356 existing tests must continue passing.
 
 ---
 
-## 8. Risk Mitigation
+## 7. Performance Considerations
 
-| Risk | Mitigation |
-|------|------------|
-| Spacebar conflict with canvas cursor | Context check: `if app.canvas_cursor_active` retains draw behavior, else opens palette. Exact same pattern as S-key dual behavior (line 410-419 of input.rs). |
-| Reference layer performance | Pre-process image to `Vec<Vec<Option<Rgb>>>` on load. Rendering is a simple lookup per cell — no image processing per frame. Cache invalidated only on zoom change or reference reload. |
-| Batch JSON parsing errors | serde handles malformed JSON with clear error messages. Per-operation errors are caught individually and don't halt the batch. |
-| Project v6 backward compatibility | `#[serde(skip_serializing_if = "Option::is_none")]` + `#[serde(default)]` — standard serde pattern. Version bump is conditional. |
-| Reference image path persistence | Store relative to project file directory. On load, resolve against project parent dir. If file not found, set reference to None with a warning — don't crash. |
-| Color rendering | All reference colors go through `Rgb::to_ratatui()` which uses `Color::Indexed(nearest_256())`. No risk of `Color::Rgb()` leaking. |
+- **PNG generation**: 128×128 canvas at 8×16 = 1024×2048 pixels = ~8MB uncompressed RGBA. PNG compression brings this down to ~100KB-1MB. Target: <500ms.
+- **Scale factor**: `--scale 4` on max canvas = 4096×8192 pixels. This is large but still <100ms with simple pixel copy. Cap scale at 8 to prevent accidental multi-GB images.
+- **No font rendering**: Block character rendering is pure geometry (rectangle fills), not glyph rasterization. This is fast and dependency-free.
 
 ---
 
-## 9. Dependencies
+## 8. Security Considerations
 
-No new crate dependencies. The `image` crate (already used by `import.rs`) handles reference image loading. `serde` and `serde_json` (already used everywhere) handle batch JSON parsing. `clap` (already used for CLI) handles new subcommands.
-
----
-
-## 10. Future Considerations
-
-This architecture enables:
-- **Command palette history**: Track recently used commands, show at top of list
-- **Batch stdin**: Replace file path with `-` to read from stdin (pipe-friendly)
-- **MCP server**: The batch executor's `execute_op()` function is the natural entry point for a Model Context Protocol server — it's already JSON-in, state-mutation-out
-- **Multiple reference images**: `ReferenceLayer` could become `Vec<ReferenceLayer>` with per-layer visibility
-- **Keyboard shortcut remapping**: The command registry provides the indirection layer needed for customizable bindings
+- **Path traversal**: Output path for export is user-provided. No special handling needed — `image::save()` writes to the given path. No network access.
+- **Memory**: Max image size (128×128 canvas × 8×16 cell × 8 scale) = 8192×16384 × 4 bytes = ~512MB. Cap scale at 8 and validate cell size (max 64×64) to prevent OOM.
+- **Input validation**: Cell size parsing rejects 0 or >64. Scale rejects 0 or >8.
