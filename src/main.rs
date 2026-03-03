@@ -1,17 +1,19 @@
+// Re-export library modules so binary-internal modules can use crate::
+pub use kakukuma::canvas;
+pub use kakukuma::cell;
+pub use kakukuma::export;
+pub use kakukuma::history;
+pub use kakukuma::import;
+pub use kakukuma::oplog;
+pub use kakukuma::palette;
+pub use kakukuma::project;
+pub use kakukuma::symmetry;
+pub use kakukuma::theme;
+pub use kakukuma::tools;
+
 mod app;
-mod canvas;
-mod cell;
 mod cli;
-mod export;
-mod history;
-mod import;
 mod input;
-mod oplog;
-mod palette;
-mod project;
-mod symmetry;
-mod theme;
-mod tools;
 mod ui;
 
 use std::io;

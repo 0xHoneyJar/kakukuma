@@ -1,5 +1,7 @@
+use image::{Rgba, RgbaImage};
+
 use crate::canvas::Canvas;
-use crate::cell::{is_half_block, nearest_256, resolve_half_block, Rgb, ANSI_16_RGB};
+use crate::cell::{blocks, is_half_block, nearest_16, nearest_256, resolve_half_block, ResolvedHalfBlock, Rgb};
 
 /// ANSI color format for export.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -12,28 +14,9 @@ pub enum ColorFormat {
     Color16,
 }
 
-/// Find the nearest ANSI 16 color index for an Rgb value (Euclidean distance).
-fn nearest_16(color: &Rgb) -> u8 {
-    let mut best_idx: u8 = 0;
-    let mut best_dist = u32::MAX;
-
-    for (i, &(r, g, b)) in ANSI_16_RGB.iter().enumerate() {
-        let dr = color.r as i32 - r as i32;
-        let dg = color.g as i32 - g as i32;
-        let db = color.b as i32 - b as i32;
-        let dist = (dr * dr + dg * dg + db * db) as u32;
-        if dist < best_dist {
-            best_dist = dist;
-            best_idx = i as u8;
-        }
-    }
-
-    best_idx
-}
-
 /// Returns the bounding box of all non-empty cells as (min_x, min_y, max_x, max_y),
 /// or None if the canvas is entirely empty.
-fn bounding_box(canvas: &Canvas) -> Option<(usize, usize, usize, usize)> {
+pub fn bounding_box(canvas: &Canvas) -> Option<(usize, usize, usize, usize)> {
     let mut min_x = canvas.width;
     let mut min_y = canvas.height;
     let mut max_x = 0usize;
@@ -187,7 +170,9 @@ pub fn to_ansi(canvas: &Canvas, format: ColorFormat) -> String {
 
                 // Determine effective (ch, fg, bg) — half-block resolution or raw cell
                 let (out_ch, fg, bg) = if is_half_block(cell.ch) {
-                    let resolved = resolve_half_block(&cell).unwrap();
+                    let resolved = resolve_half_block(&cell).unwrap_or(ResolvedHalfBlock {
+                        ch: cell.ch, fg: cell.fg, bg: cell.bg,
+                    });
                     (resolved.ch, resolved.fg, resolved.bg)
                 } else {
                     (cell.ch, cell.fg, cell.bg)
@@ -213,6 +198,198 @@ pub fn to_ansi(canvas: &Canvas, format: ColorFormat) -> String {
     }
 
     output
+}
+
+// --- PNG Export ---
+
+/// Convert an Rgb color to an opaque RGBA pixel.
+fn rgb_to_rgba(c: &Rgb) -> Rgba<u8> {
+    Rgba([c.r, c.g, c.b, 255])
+}
+
+/// Transparent pixel (alpha = 0).
+const TRANSPARENT: Rgba<u8> = Rgba([0, 0, 0, 0]);
+
+/// Returns true if this pixel should use fg color for shade characters.
+fn shade_pixel(x: u32, y: u32, shade: char) -> bool {
+    match shade {
+        blocks::SHADE_LIGHT => (x + y) % 4 == 0,          // 25%
+        blocks::SHADE_MEDIUM => (x + y) % 2 == 0,         // 50% checkerboard
+        blocks::SHADE_DARK => (x + y) % 4 != 0,           // 75%
+        _ => false,
+    }
+}
+
+/// Vertical fractional fill amount (fills from bottom).
+fn vertical_fraction(ch: char) -> Option<f32> {
+    match ch {
+        blocks::LOWER_1_8 => Some(1.0 / 8.0),
+        blocks::LOWER_1_4 => Some(2.0 / 8.0),
+        blocks::LOWER_3_8 => Some(3.0 / 8.0),
+        blocks::LOWER_HALF => Some(4.0 / 8.0),
+        blocks::LOWER_5_8 => Some(5.0 / 8.0),
+        blocks::LOWER_3_4 => Some(6.0 / 8.0),
+        blocks::LOWER_7_8 => Some(7.0 / 8.0),
+        _ => None,
+    }
+}
+
+/// Horizontal fractional fill amount (fills from left).
+fn horizontal_fraction(ch: char) -> Option<f32> {
+    match ch {
+        blocks::LEFT_1_8 => Some(1.0 / 8.0),
+        blocks::LEFT_1_4 => Some(2.0 / 8.0),
+        blocks::LEFT_3_8 => Some(3.0 / 8.0),
+        blocks::LEFT_HALF => Some(4.0 / 8.0),
+        blocks::LEFT_5_8 => Some(5.0 / 8.0),
+        blocks::LEFT_3_4 => Some(6.0 / 8.0),
+        blocks::LEFT_7_8 => Some(7.0 / 8.0),
+        _ => None,
+    }
+}
+
+/// Render a single cell's pixels into the image buffer.
+fn render_cell_to_pixels(
+    img: &mut RgbaImage,
+    cell: &crate::cell::Cell,
+    px: u32,
+    py: u32,
+    cw: u32,
+    ch_h: u32,
+) {
+    let fg_rgba = cell.fg.as_ref().map(rgb_to_rgba).unwrap_or(TRANSPARENT);
+    let bg_rgba = cell.bg.as_ref().map(rgb_to_rgba).unwrap_or(TRANSPARENT);
+    let ch = cell.ch;
+
+    if ch == blocks::FULL {
+        // Full block: entire cell is fg
+        fill_rect(img, px, py, cw, ch_h, fg_rgba);
+        return;
+    }
+
+    if ch == blocks::UPPER_HALF {
+        let half = ch_h / 2;
+        fill_rect(img, px, py, cw, half, fg_rgba);
+        fill_rect(img, px, py + half, cw, ch_h - half, bg_rgba);
+        return;
+    }
+
+    if ch == blocks::LOWER_HALF {
+        let half = ch_h / 2;
+        fill_rect(img, px, py, cw, half, bg_rgba);
+        fill_rect(img, px, py + half, cw, ch_h - half, fg_rgba);
+        return;
+    }
+
+    if ch == blocks::LEFT_HALF {
+        let half = cw / 2;
+        fill_rect(img, px, py, half, ch_h, fg_rgba);
+        fill_rect(img, px + half, py, cw - half, ch_h, bg_rgba);
+        return;
+    }
+
+    if ch == blocks::RIGHT_HALF {
+        let half = cw / 2;
+        fill_rect(img, px, py, half, ch_h, bg_rgba);
+        fill_rect(img, px + half, py, cw - half, ch_h, fg_rgba);
+        return;
+    }
+
+    // Shade characters
+    if ch == blocks::SHADE_LIGHT || ch == blocks::SHADE_MEDIUM || ch == blocks::SHADE_DARK {
+        for dy in 0..ch_h {
+            for dx in 0..cw {
+                let pixel = if shade_pixel(dx, dy, ch) { fg_rgba } else { bg_rgba };
+                img.put_pixel(px + dx, py + dy, pixel);
+            }
+        }
+        return;
+    }
+
+    // Vertical fractional fills (from bottom)
+    if let Some(frac) = vertical_fraction(ch) {
+        let fg_rows = (ch_h as f32 * frac).round() as u32;
+        let bg_rows = ch_h - fg_rows;
+        fill_rect(img, px, py, cw, bg_rows, bg_rgba);
+        fill_rect(img, px, py + bg_rows, cw, fg_rows, fg_rgba);
+        return;
+    }
+
+    // Horizontal fractional fills (from left)
+    if let Some(frac) = horizontal_fraction(ch) {
+        let fg_cols = (cw as f32 * frac).round() as u32;
+        let bg_cols = cw - fg_cols;
+        fill_rect(img, px, py, fg_cols, ch_h, fg_rgba);
+        fill_rect(img, px + fg_cols, py, bg_cols, ch_h, bg_rgba);
+        return;
+    }
+
+    // Space or empty
+    if ch == ' ' {
+        fill_rect(img, px, py, cw, ch_h, bg_rgba);
+        return;
+    }
+
+    // Any other printable character: fill with fg
+    fill_rect(img, px, py, cw, ch_h, fg_rgba);
+}
+
+/// Fill a rectangular region with a single color.
+fn fill_rect(img: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, color: Rgba<u8>) {
+    for dy in 0..h {
+        for dx in 0..w {
+            img.put_pixel(x + dx, y + dy, color);
+        }
+    }
+}
+
+/// Export canvas as a PNG image.
+///
+/// Each canvas cell maps to a `cell_w × cell_h` pixel block.
+/// If `crop` is true, only the bounding box of non-empty cells is exported.
+/// If `scale > 1`, the image is upscaled with nearest-neighbor interpolation.
+pub fn to_png(
+    canvas: &Canvas,
+    cell_w: u32,
+    cell_h: u32,
+    scale: u32,
+    crop: bool,
+) -> RgbaImage {
+    let scale = scale.clamp(1, 8);
+
+    let (min_x, min_y, max_x, max_y) = if crop {
+        match bounding_box(canvas) {
+            Some(bb) => bb,
+            None => return RgbaImage::new(1, 1), // Empty canvas
+        }
+    } else {
+        (0, 0, canvas.width.saturating_sub(1), canvas.height.saturating_sub(1))
+    };
+
+    let region_w = (max_x - min_x + 1) as u32;
+    let region_h = (max_y - min_y + 1) as u32;
+    let img_w = region_w * cell_w;
+    let img_h = region_h * cell_h;
+
+    let mut img = RgbaImage::new(img_w, img_h);
+
+    for cy in min_y..=max_y {
+        for cx in min_x..=max_x {
+            if let Some(cell) = canvas.get(cx, cy) {
+                let px = (cx - min_x) as u32 * cell_w;
+                let py = (cy - min_y) as u32 * cell_h;
+                render_cell_to_pixels(&mut img, &cell, px, py, cell_w, cell_h);
+            }
+        }
+    }
+
+    if scale > 1 {
+        let new_w = img_w * scale;
+        let new_h = img_h * scale;
+        image::imageops::resize(&img, new_w, new_h, image::imageops::FilterType::Nearest)
+    } else {
+        img
+    }
 }
 
 #[cfg(test)]
@@ -673,5 +850,275 @@ mod tests {
         let canvas = Canvas::new();
         let ansi = to_ansi(&canvas, ColorFormat::Color256);
         assert!(ansi.is_empty(), "Expected empty string for empty canvas");
+    }
+
+    // --- PNG Export Tests (Sprint 2, Task 2.6) ---
+
+    const CW: u32 = 8;
+    const CH: u32 = 16;
+
+    fn red_rgb() -> Rgb { Rgb::new(255, 0, 0) }
+    fn blue_rgb() -> Rgb { Rgb::new(0, 0, 255) }
+
+    #[test]
+    fn test_png_empty_canvas() {
+        let canvas = Canvas::new();
+        let img = to_png(&canvas, CW, CH, 1, true);
+        // Empty canvas with crop returns 1x1
+        assert_eq!(img.width(), 1);
+        assert_eq!(img.height(), 1);
+    }
+
+    #[test]
+    fn test_png_full_block_fills_entire_cell() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell { ch: blocks::FULL, fg: Some(red_rgb()), bg: None });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        assert_eq!(img.width(), CW);
+        assert_eq!(img.height(), CH);
+        // Every pixel should be red (fg)
+        for y in 0..CH {
+            for x in 0..CW {
+                assert_eq!(img.get_pixel(x, y), &Rgba([255, 0, 0, 255]),
+                    "Pixel ({},{}) should be red", x, y);
+            }
+        }
+    }
+
+    #[test]
+    fn test_png_upper_half() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::UPPER_HALF,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        let half = CH / 2;
+        // Top half: fg (red)
+        assert_eq!(img.get_pixel(0, 0), &Rgba([255, 0, 0, 255]));
+        assert_eq!(img.get_pixel(0, half - 1), &Rgba([255, 0, 0, 255]));
+        // Bottom half: bg (blue)
+        assert_eq!(img.get_pixel(0, half), &Rgba([0, 0, 255, 255]));
+        assert_eq!(img.get_pixel(0, CH - 1), &Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn test_png_lower_half() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::LOWER_HALF,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        let half = CH / 2;
+        // Top half: bg (blue)
+        assert_eq!(img.get_pixel(0, 0), &Rgba([0, 0, 255, 255]));
+        // Bottom half: fg (red)
+        assert_eq!(img.get_pixel(0, half), &Rgba([255, 0, 0, 255]));
+        assert_eq!(img.get_pixel(0, CH - 1), &Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn test_png_left_half() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::LEFT_HALF,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        let half = CW / 2;
+        // Left half: fg (red)
+        assert_eq!(img.get_pixel(0, 0), &Rgba([255, 0, 0, 255]));
+        assert_eq!(img.get_pixel(half - 1, 0), &Rgba([255, 0, 0, 255]));
+        // Right half: bg (blue)
+        assert_eq!(img.get_pixel(half, 0), &Rgba([0, 0, 255, 255]));
+        assert_eq!(img.get_pixel(CW - 1, 0), &Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn test_png_right_half() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::RIGHT_HALF,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        let half = CW / 2;
+        // Left half: bg (blue)
+        assert_eq!(img.get_pixel(0, 0), &Rgba([0, 0, 255, 255]));
+        // Right half: fg (red)
+        assert_eq!(img.get_pixel(half, 0), &Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn test_png_shade_light_density() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::SHADE_LIGHT,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        let mut fg_count = 0u32;
+        let total = CW * CH;
+        for y in 0..CH {
+            for x in 0..CW {
+                if *img.get_pixel(x, y) == Rgba([255, 0, 0, 255]) {
+                    fg_count += 1;
+                }
+            }
+        }
+        // Light shade: ~25% fg
+        let pct = (fg_count as f32 / total as f32) * 100.0;
+        assert!(pct > 15.0 && pct < 35.0, "Light shade fg density {:.1}% should be ~25%", pct);
+    }
+
+    #[test]
+    fn test_png_shade_medium_density() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::SHADE_MEDIUM,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        let mut fg_count = 0u32;
+        let total = CW * CH;
+        for y in 0..CH {
+            for x in 0..CW {
+                if *img.get_pixel(x, y) == Rgba([255, 0, 0, 255]) {
+                    fg_count += 1;
+                }
+            }
+        }
+        // Medium shade: ~50% fg
+        let pct = (fg_count as f32 / total as f32) * 100.0;
+        assert!(pct > 40.0 && pct < 60.0, "Medium shade fg density {:.1}% should be ~50%", pct);
+    }
+
+    #[test]
+    fn test_png_shade_dark_density() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::SHADE_DARK,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        let mut fg_count = 0u32;
+        let total = CW * CH;
+        for y in 0..CH {
+            for x in 0..CW {
+                if *img.get_pixel(x, y) == Rgba([255, 0, 0, 255]) {
+                    fg_count += 1;
+                }
+            }
+        }
+        // Dark shade: ~75% fg
+        let pct = (fg_count as f32 / total as f32) * 100.0;
+        assert!(pct > 65.0 && pct < 85.0, "Dark shade fg density {:.1}% should be ~75%", pct);
+    }
+
+    #[test]
+    fn test_png_vertical_fractional_lower_1_4() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::LOWER_1_4,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        // Bottom quarter should be fg (red), top 3/4 should be bg (blue)
+        // LOWER_1_4 = 2/8 = 25%, so fg_rows = round(16 * 0.25) = 4
+        assert_eq!(img.get_pixel(0, 0), &Rgba([0, 0, 255, 255]), "Top should be bg");
+        assert_eq!(img.get_pixel(0, CH - 1), &Rgba([255, 0, 0, 255]), "Bottom should be fg");
+    }
+
+    #[test]
+    fn test_png_horizontal_fractional_left_3_4() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::LEFT_3_4,
+            fg: Some(red_rgb()),
+            bg: Some(blue_rgb()),
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        // Left 3/4 should be fg (red), right 1/4 should be bg (blue)
+        // LEFT_3_4 = 6/8 = 75%, so fg_cols = round(8 * 0.75) = 6
+        assert_eq!(img.get_pixel(0, 0), &Rgba([255, 0, 0, 255]), "Left should be fg");
+        assert_eq!(img.get_pixel(CW - 1, 0), &Rgba([0, 0, 255, 255]), "Right should be bg");
+    }
+
+    #[test]
+    fn test_png_autocrop() {
+        let mut canvas = Canvas::new_with_size(16, 16);
+        // Place a single cell at (5, 3)
+        canvas.set(5, 3, Cell { ch: blocks::FULL, fg: Some(red_rgb()), bg: None });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        // Cropped to 1 cell
+        assert_eq!(img.width(), CW);
+        assert_eq!(img.height(), CH);
+    }
+
+    #[test]
+    fn test_png_no_crop() {
+        let mut canvas = Canvas::new_with_size(16, 16);
+        canvas.set(5, 3, Cell { ch: blocks::FULL, fg: Some(red_rgb()), bg: None });
+        let img = to_png(&canvas, CW, CH, 1, false);
+        // Full canvas dimensions
+        assert_eq!(img.width(), 16 * CW);
+        assert_eq!(img.height(), 16 * CH);
+    }
+
+    #[test]
+    fn test_png_scale_2x() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell { ch: blocks::FULL, fg: Some(red_rgb()), bg: None });
+        let img = to_png(&canvas, CW, CH, 2, true);
+        // Doubled dimensions
+        assert_eq!(img.width(), CW * 2);
+        assert_eq!(img.height(), CH * 2);
+        // All pixels should still be red (nearest-neighbor preserves color)
+        assert_eq!(img.get_pixel(0, 0), &Rgba([255, 0, 0, 255]));
+        assert_eq!(img.get_pixel(CW * 2 - 1, CH * 2 - 1), &Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn test_png_transparent_bg() {
+        let mut canvas = Canvas::new();
+        // Cell with fg but no bg → bg pixels should be transparent (alpha=0)
+        canvas.set(0, 0, Cell {
+            ch: blocks::UPPER_HALF,
+            fg: Some(red_rgb()),
+            bg: None,
+        });
+        let img = to_png(&canvas, CW, CH, 1, true);
+        // Bottom half should be transparent (bg=None)
+        let bottom_pixel = img.get_pixel(0, CH - 1);
+        assert_eq!(bottom_pixel[3], 0, "bg=None should produce alpha=0, got {:?}", bottom_pixel);
+    }
+
+    #[test]
+    fn test_png_custom_cell_size() {
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell { ch: blocks::FULL, fg: Some(red_rgb()), bg: None });
+        let img = to_png(&canvas, 4, 8, 1, true);
+        assert_eq!(img.width(), 4);
+        assert_eq!(img.height(), 8);
+    }
+
+    #[test]
+    fn test_png_space_fills_bg() {
+        let mut canvas = Canvas::new_with_size(2, 2);
+        canvas.set(0, 0, Cell { ch: ' ', fg: None, bg: Some(blue_rgb()) });
+        // Cell::is_empty only checks ch==' ', so space+bg is "empty" for bounding box.
+        // Use crop=false to test space rendering directly.
+        let img = to_png(&canvas, CW, CH, 1, false);
+        // Space should fill with bg color
+        assert_eq!(img.get_pixel(0, 0), &Rgba([0, 0, 255, 255]));
     }
 }
