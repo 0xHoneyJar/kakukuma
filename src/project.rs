@@ -13,6 +13,9 @@ pub struct Project {
     pub color: Rgb,
     pub symmetry: SymmetryMode,
     pub canvas: Canvas,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub reference_image: Option<String>,
 }
 
 impl Project {
@@ -26,11 +29,18 @@ impl Project {
             color,
             symmetry: sym,
             canvas,
+            reference_image: None,
         }
     }
 
     pub fn save_to_file(&mut self, path: &std::path::Path) -> Result<(), String> {
         self.modified_at = now_iso8601();
+        // Set version to 6 when reference_image is present, otherwise keep 5
+        if self.reference_image.is_some() {
+            self.version = 6;
+        } else if self.version < 6 {
+            // Keep existing version (don't downgrade a v6 file that had reference removed)
+        }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Serialize error: {}", e))?;
         std::fs::write(path, json)
@@ -42,10 +52,10 @@ impl Project {
             .map_err(|e| format!("Read error: {}", e))?;
         let project: Project = serde_json::from_str(&data)
             .map_err(|e| format!("Parse error: {}", e))?;
-        // Accept v1 (legacy 16-color), v2 (256-color), v3 (dynamic canvas), v4 (generic char), v5 (RGB)
-        if project.version > 5 {
+        // Accept v1 (legacy 16-color), v2 (256-color), v3 (dynamic canvas), v4 (generic char), v5 (RGB), v6 (reference)
+        if project.version > 6 {
             return Err(format!(
-                "File version {} is newer than supported (v5)",
+                "File version {} is newer than supported (v6)",
                 project.version
             ));
         }
@@ -387,6 +397,60 @@ mod tests {
             assert_eq!(cell.fg, Some(*fg), "fg mismatch at {}", i);
             assert_eq!(cell.bg, Some(*bg), "bg mismatch at {}", i);
         }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // --- Cycle 018: v6 reference image tests ---
+
+    #[test]
+    fn test_v6_roundtrip_with_reference() {
+        let canvas = Canvas::new();
+        let mut project = Project::new("ref-test", canvas, Rgb::WHITE, SymmetryMode::Off);
+        project.reference_image = Some("photo.png".to_string());
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("kaku_test_v6_roundtrip.kaku");
+        project.save_to_file(&path).unwrap();
+
+        let loaded = Project::load_from_file(&path).unwrap();
+        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.reference_image, Some("photo.png".to_string()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_v5_loads_without_reference() {
+        let canvas = Canvas::new();
+        let mut project = Project::new("v5-test", canvas, Rgb::WHITE, SymmetryMode::Off);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("kaku_test_v5_no_ref.kaku");
+        project.save_to_file(&path).unwrap();
+
+        let loaded = Project::load_from_file(&path).unwrap();
+        assert_eq!(loaded.version, 5);
+        assert_eq!(loaded.reference_image, None);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_v5_without_reference_stays_v5() {
+        let canvas = Canvas::new();
+        let mut project = Project::new("stay-v5", canvas, Rgb::WHITE, SymmetryMode::Off);
+        assert_eq!(project.version, 5);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("kaku_test_stays_v5.kaku");
+        project.save_to_file(&path).unwrap();
+
+        // Re-read the raw JSON to verify version field
+        let json = std::fs::read_to_string(&path).unwrap();
+        assert!(json.contains("\"version\": 5"));
+        // reference_image should be absent (skip_serializing_if)
+        assert!(!json.contains("reference_image"));
 
         let _ = std::fs::remove_file(&path);
     }

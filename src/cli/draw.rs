@@ -8,6 +8,18 @@ use crate::oplog;
 use crate::symmetry::apply_symmetry;
 use crate::tools;
 
+/// Resolve the --ch option: alias name, raw char, or default to FULL block.
+fn resolve_ch(opts: &DrawOpts) -> char {
+    match &opts.ch {
+        Some(s) => blocks::resolve_char_alias(s).unwrap_or_else(|| {
+            cli_error(&format!(
+                "Unknown character '{}'. Run 'kakukuma chars' for available characters.", s
+            ));
+        }),
+        None => blocks::FULL,
+    }
+}
+
 pub fn run(tool: DrawTool) -> io::Result<()> {
     match tool {
         DrawTool::Pencil { file, coord, opts } => cmd_pencil(&file, coord, &opts),
@@ -73,7 +85,7 @@ fn apply_and_save(
 fn cmd_pencil(file: &str, coord: (usize, usize), opts: &DrawOpts) -> io::Result<()> {
     let project = load_project(file);
     let (fg, bg) = resolve_colors(opts);
-    let ch = opts.ch.unwrap_or(blocks::FULL);
+    let ch = resolve_ch(opts);
 
     let (x, y) = coord;
     validate_coords(x, y, &project.canvas);
@@ -108,7 +120,7 @@ fn cmd_eraser(file: &str, coord: (usize, usize), region: Option<(usize, usize, u
 fn cmd_line(file: &str, from: (usize, usize), to: (usize, usize), opts: &DrawOpts) -> io::Result<()> {
     let project = load_project(file);
     let (fg, bg) = resolve_colors(opts);
-    let ch = opts.ch.unwrap_or(blocks::FULL);
+    let ch = resolve_ch(opts);
 
     let mutations = tools::line(&project.canvas, from.0, from.1, to.0, to.1, ch, fg, bg);
     drop(project);
@@ -119,7 +131,7 @@ fn cmd_line(file: &str, from: (usize, usize), to: (usize, usize), opts: &DrawOpt
 fn cmd_rect(file: &str, from: (usize, usize), to: (usize, usize), filled: bool, opts: &DrawOpts) -> io::Result<()> {
     let project = load_project(file);
     let (fg, bg) = resolve_colors(opts);
-    let ch = opts.ch.unwrap_or(blocks::FULL);
+    let ch = resolve_ch(opts);
 
     let mutations = tools::rectangle(&project.canvas, from.0, from.1, to.0, to.1, ch, fg, bg, filled);
     drop(project);
@@ -130,7 +142,7 @@ fn cmd_rect(file: &str, from: (usize, usize), to: (usize, usize), filled: bool, 
 fn cmd_fill(file: &str, coord: (usize, usize), opts: &DrawOpts) -> io::Result<()> {
     let project = load_project(file);
     let (fg, bg) = resolve_colors(opts);
-    let ch = opts.ch.unwrap_or(blocks::FULL);
+    let ch = resolve_ch(opts);
 
     let (x, y) = coord;
     validate_coords(x, y, &project.canvas);
@@ -170,5 +182,52 @@ fn validate_coords(x: usize, y: usize, canvas: &crate::canvas::Canvas) {
             "Position ({}, {}) exceeds canvas dimensions ({}x{})",
             x, y, canvas.width, canvas.height
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{DrawOpts, CliSymmetry};
+
+    fn make_opts(ch: Option<&str>) -> DrawOpts {
+        DrawOpts {
+            color: None,
+            fg: None,
+            bg: None,
+            ch: ch.map(|s| s.to_string()),
+            symmetry: CliSymmetry::Off,
+            no_log: false,
+        }
+    }
+
+    #[test]
+    fn resolve_ch_defaults_to_full_block() {
+        let opts = make_opts(None);
+        assert_eq!(resolve_ch(&opts), blocks::FULL);
+    }
+
+    #[test]
+    fn resolve_ch_name_alias() {
+        let opts = make_opts(Some("shade-light"));
+        assert_eq!(resolve_ch(&opts), blocks::SHADE_LIGHT);
+    }
+
+    #[test]
+    fn resolve_ch_alt_alias() {
+        let opts = make_opts(Some("block"));
+        assert_eq!(resolve_ch(&opts), blocks::FULL);
+    }
+
+    #[test]
+    fn resolve_ch_raw_char_passthrough() {
+        let opts = make_opts(Some("░"));
+        assert_eq!(resolve_ch(&opts), '░');
+    }
+
+    #[test]
+    fn resolve_ch_case_insensitive() {
+        let opts = make_opts(Some("FULL"));
+        assert_eq!(resolve_ch(&opts), blocks::FULL);
     }
 }

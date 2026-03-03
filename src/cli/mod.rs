@@ -1,3 +1,5 @@
+pub mod batch;
+pub mod chars;
 pub mod draw;
 pub mod preview;
 pub mod inspect;
@@ -12,8 +14,9 @@ use std::path::Path;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::canvas::Canvas;
-use crate::cell::{parse_hex_color, Rgb};
+use crate::cell::{parse_hex_color, Cell, Rgb};
 use crate::export::ColorFormat;
+use crate::import::{ImportOptions, FitMode, ImportColorMode};
 use crate::project::Project;
 use crate::symmetry::SymmetryMode;
 
@@ -91,14 +94,25 @@ pub enum Command {
         /// Path to .kaku file
         file: String,
         /// Output file path
-        #[arg(long)]
-        output: String,
-        /// Export format
-        #[arg(long, default_value = "ansi")]
+        output: Option<String>,
+        /// Output file path (deprecated, use positional)
+        #[arg(long = "output", hide = true)]
+        output_flag: Option<String>,
+        /// Export format (auto-detects from file extension when "auto")
+        #[arg(long, default_value = "auto")]
         format: PreviewFormat,
         /// Color depth for ANSI output
         #[arg(long, default_value = "truecolor")]
         color_format: CliColorFormat,
+        /// Cell size for PNG export (WxH pixels)
+        #[arg(long, default_value = "8x16")]
+        cell_size: String,
+        /// Integer scale factor for PNG export
+        #[arg(long, default_value_t = 1)]
+        scale: u32,
+        /// Export full canvas (skip auto-crop)
+        #[arg(long)]
+        no_crop: bool,
     },
 
     /// Compare two canvas files
@@ -118,7 +132,12 @@ pub enum Command {
         file: String,
     },
 
-    /// Undo last CLI operation
+    /// Undo last CLI operation.
+    ///
+    /// Uses a linear model: new operations discard redo history.
+    /// Operations that overlap (e.g., clear over a drawn rect) store
+    /// only the cleared state — undoing the clear restores the clear's
+    /// snapshot, not the original drawn content.
     Undo {
         /// Path to .kaku file
         file: String,
@@ -145,10 +164,90 @@ pub enum Command {
         full: bool,
     },
 
+    /// Resize canvas dimensions
+    Resize {
+        /// Path to .kaku file
+        file: String,
+        /// New width (8-128)
+        #[arg(long)]
+        width: Option<usize>,
+        /// New height (8-128)
+        #[arg(long)]
+        height: Option<usize>,
+        /// Canvas size as WxH (e.g., 32x24)
+        #[arg(long, value_parser = parse_size)]
+        size: Option<(usize, usize)>,
+    },
+
+    /// Clear canvas (reset all cells to default).
+    ///
+    /// Warning: clear is destructive. If clear overlaps with prior
+    /// operations, undoing the clear may not fully restore all
+    /// previous content. Consider exporting a backup first.
+    Clear {
+        /// Path to .kaku file
+        file: String,
+        /// Clear only a region (x1,y1,x2,y2)
+        #[arg(long, value_parser = parse_region)]
+        region: Option<(usize, usize, usize, usize)>,
+    },
+
+    /// Import image file onto canvas
+    Import {
+        /// Path to image file (PNG, JPEG, etc.)
+        image: String,
+        /// Path to output .kaku file
+        output: Option<String>,
+        /// Path to output .kaku file (deprecated, use positional)
+        #[arg(long = "output", hide = true)]
+        output_flag: Option<String>,
+        /// Canvas width (8-128)
+        #[arg(long, default_value_t = 48)]
+        width: usize,
+        /// Canvas height (8-128)
+        #[arg(long, default_value_t = 32)]
+        height: usize,
+        /// Color quantization (256 or 16)
+        #[arg(long, default_value = "256")]
+        quantize: CliColorFormat,
+    },
+
     /// Palette management
     Palette {
         #[command(subcommand)]
         action: PaletteAction,
+    },
+
+    /// Execute batch operations from a JSON file
+    Batch {
+        /// Path to .kaku file
+        file: String,
+        /// Path to JSON commands file
+        commands: String,
+        /// Validate JSON without executing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// List available block characters with metadata
+    Chars {
+        /// Filter by category (primary, shade, vertical-fill, horizontal-fill)
+        #[arg(long)]
+        category: Option<String>,
+        /// Human-readable table output instead of JSON
+        #[arg(long)]
+        plain: bool,
+    },
+
+    /// Set or clear reference image for a project
+    Reference {
+        /// Path to .kaku file
+        file: String,
+        /// Path to reference image (PNG, JPEG, etc.)
+        image: Option<String>,
+        /// Clear reference image
+        #[arg(long)]
+        clear: bool,
     },
 }
 
@@ -235,9 +334,9 @@ pub struct DrawOpts {
     /// Set background explicitly
     #[arg(long)]
     pub bg: Option<String>,
-    /// Block character to use
+    /// Block character: raw char (█) or name (full, shade-light, etc.). See 'kakukuma chars'.
     #[arg(long, name = "char")]
-    pub ch: Option<char>,
+    pub ch: Option<String>,
     /// Apply symmetry
     #[arg(long, default_value = "off")]
     pub symmetry: CliSymmetry,
@@ -246,11 +345,13 @@ pub struct DrawOpts {
     pub no_log: bool,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
 pub enum PreviewFormat {
+    Auto,
     Ansi,
     Json,
     Plain,
+    Png,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -281,7 +382,7 @@ pub enum PaletteAction {
     /// Export palette to file
     Export {
         name: String,
-        #[arg(long)]
+        /// Output file path
         output: String,
     },
     /// Add color to palette
@@ -377,12 +478,20 @@ pub fn to_color_format(f: &CliColorFormat) -> ColorFormat {
 }
 
 fn cli_error(msg: &str) -> ! {
-    eprintln!("Error: {}", msg);
+    let json = serde_json::json!({
+        "error": msg,
+        "code": "USER_ERROR"
+    });
+    eprintln!("{}", json);
     std::process::exit(1)
 }
 
 fn internal_error(msg: &str) -> ! {
-    eprintln!("Internal error: {}", msg);
+    let json = serde_json::json!({
+        "error": msg,
+        "code": "INTERNAL_ERROR"
+    });
+    eprintln!("{}", json);
     std::process::exit(2)
 }
 
@@ -424,11 +533,168 @@ pub fn run(cmd: Command) -> io::Result<()> {
         Command::Undo { file, count } => history_cmd::undo(&file, count),
         Command::Redo { file, count } => history_cmd::redo(&file, count),
         Command::History { file, full } => history_cmd::history(&file, full),
-        Command::Export { file, output, format, color_format } => {
-            preview::export_to_file(&file, &output, &format, &color_format)
+        Command::Export { file, output, output_flag, format, color_format, cell_size, scale, no_crop } => {
+            let out = output.or(output_flag)
+                .unwrap_or_else(|| cli_error("Output path required. Usage: kakukuma export <FILE> <OUTPUT>"));
+            preview::export_to_file(&file, &out, &format, &color_format, &cell_size, scale, no_crop)
+        }
+        Command::Resize { file, width, height, size } => {
+            cmd_resize(&file, width, height, size)
+        }
+        Command::Clear { file, region } => cmd_clear(&file, region),
+        Command::Import { image, output, output_flag, width, height, quantize } => {
+            let out = output.or(output_flag)
+                .unwrap_or_else(|| cli_error("Output path required. Usage: kakukuma import <IMAGE> <OUTPUT>"));
+            cmd_import(&image, &out, width, height, &quantize)
         }
         Command::Palette { action } => palette_cmd::run(action),
+        Command::Batch { file, commands, dry_run } => batch::run_batch(&file, &commands, dry_run),
+        Command::Chars { category, plain } => chars::run_chars(category.as_deref(), plain),
+        Command::Reference { file, image, clear } => cmd_reference(&file, image.as_deref(), clear),
     }
+}
+
+fn cmd_resize(
+    file: &str,
+    width: Option<usize>,
+    height: Option<usize>,
+    size: Option<(usize, usize)>,
+) -> io::Result<()> {
+    let path = Path::new(file);
+    let mut project = load_project(file);
+
+    let (new_w, new_h) = match size {
+        Some((w, h)) => (w, h),
+        None => {
+            let w = width.unwrap_or(project.canvas.width);
+            let h = height.unwrap_or(project.canvas.height);
+            (w, h)
+        }
+    };
+
+    let old_w = project.canvas.width;
+    let old_h = project.canvas.height;
+    project.canvas.resize(new_w, new_h);
+    let actual_w = project.canvas.width;
+    let actual_h = project.canvas.height;
+    let clamped = actual_w != new_w || actual_h != new_h;
+    atomic_save(&mut project, path)?;
+
+    let mut json = serde_json::json!({
+        "resized": file,
+        "old_width": old_w,
+        "old_height": old_h,
+        "new_width": actual_w,
+        "new_height": actual_h,
+    });
+    if clamped {
+        json["clamped"] = serde_json::json!(true);
+        json["requested_width"] = serde_json::json!(new_w);
+        json["requested_height"] = serde_json::json!(new_h);
+    }
+    println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
+}
+
+fn cmd_clear(file: &str, region: Option<(usize, usize, usize, usize)>) -> io::Result<()> {
+    let path = Path::new(file);
+    let mut project = load_project(file);
+
+    let cleared = match region {
+        Some((x1, y1, x2, y2)) => {
+            let mut count = 0;
+            for y in y1..=y2.min(project.canvas.height.saturating_sub(1)) {
+                for x in x1..=x2.min(project.canvas.width.saturating_sub(1)) {
+                    project.canvas.set(x, y, Cell::default());
+                    count += 1;
+                }
+            }
+            count
+        }
+        None => {
+            let w = project.canvas.width;
+            let h = project.canvas.height;
+            for y in 0..h {
+                for x in 0..w {
+                    project.canvas.set(x, y, Cell::default());
+                }
+            }
+            w * h
+        }
+    };
+
+    atomic_save(&mut project, path)?;
+
+    let json = serde_json::json!({
+        "cleared": file,
+        "cells_cleared": cleared,
+        "region": region.map(|(x1,y1,x2,y2)| serde_json::json!({
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2
+        })),
+    });
+    println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
+}
+
+fn cmd_import(
+    image: &str,
+    output: &str,
+    width: usize,
+    height: usize,
+    quantize: &CliColorFormat,
+) -> io::Result<()> {
+    let img_path = Path::new(image);
+    if !img_path.exists() {
+        cli_error(&format!("Image not found: '{}'", image));
+    }
+
+    let out_path = Path::new(output);
+
+    let color_mode = match quantize {
+        CliColorFormat::Color16 => ImportColorMode::Color16,
+        _ => ImportColorMode::Color256,
+    };
+
+    let options = ImportOptions {
+        fit_mode: FitMode::FitToCanvas,
+        color_mode,
+        ..ImportOptions::default()
+    };
+
+    let w = width.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
+    let h = height.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
+
+    let cells = crate::import::import_image(img_path, w, h, &options)
+        .map_err(|e| {
+            cli_error(&format!("Import failed: {}", e));
+        })
+        .unwrap();
+
+    let mut canvas = Canvas::new_with_size(w, h);
+    for (y, row) in cells.iter().enumerate() {
+        for (x, cell) in row.iter().enumerate() {
+            canvas.set(x, y, *cell);
+        }
+    }
+
+    let mut project = Project::new(
+        out_path.file_stem().and_then(|s| s.to_str()).unwrap_or("imported"),
+        canvas,
+        Rgb::WHITE,
+        SymmetryMode::Off,
+    );
+
+    atomic_save(&mut project, out_path)?;
+
+    let json = serde_json::json!({
+        "imported": image,
+        "output": output,
+        "width": w,
+        "height": h,
+        "color_mode": format!("{:?}", color_mode),
+    });
+    println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
 }
 
 fn cmd_new(file: &str, width: usize, height: usize, force: bool) -> io::Result<()> {
@@ -439,6 +705,7 @@ fn cmd_new(file: &str, width: usize, height: usize, force: bool) -> io::Result<(
 
     let w = width.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
     let h = height.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
+    let clamped = w != width || h != height;
 
     let canvas = Canvas::new_with_size(w, h);
     let mut project = Project::new(
@@ -455,10 +722,60 @@ fn cmd_new(file: &str, width: usize, height: usize, force: bool) -> io::Result<(
     let log = crate::oplog::log_path(path);
     crate::oplog::init_log(&log)?;
 
-    let json = serde_json::json!({
+    let mut json = serde_json::json!({
         "created": file,
         "width": w,
         "height": h,
+    });
+    if clamped {
+        json["clamped"] = serde_json::json!(true);
+        json["requested_width"] = serde_json::json!(width);
+        json["requested_height"] = serde_json::json!(height);
+    }
+    println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
+}
+
+fn cmd_reference(file: &str, image: Option<&str>, clear: bool) -> io::Result<()> {
+    let path = Path::new(file);
+    let mut project = load_project(file);
+
+    if clear {
+        project.reference_image = None;
+        atomic_save(&mut project, path)?;
+        let json = serde_json::json!({
+            "reference": serde_json::Value::Null,
+            "file": file,
+        });
+        println!("{}", serde_json::to_string(&json).unwrap());
+        return Ok(());
+    }
+
+    let img_path = match image {
+        Some(p) => p,
+        None => {
+            cli_error("Provide an image path or use --clear to remove reference");
+        }
+    };
+
+    // Validate image exists
+    if !Path::new(img_path).exists() {
+        cli_error(&format!("Image not found: '{}'", img_path));
+    }
+
+    // Store path relative to project file directory
+    let project_dir = path.parent().unwrap_or(Path::new("."));
+    let rel_path = match Path::new(img_path).strip_prefix(project_dir) {
+        Ok(rel) => rel.to_string_lossy().to_string(),
+        Err(_) => img_path.to_string(),
+    };
+
+    project.reference_image = Some(rel_path.clone());
+    atomic_save(&mut project, path)?;
+
+    let json = serde_json::json!({
+        "reference": rel_path,
+        "file": file,
     });
     println!("{}", serde_json::to_string(&json).unwrap());
     Ok(())
@@ -553,5 +870,41 @@ mod tests {
         assert_eq!(to_symmetry_mode(&CliSymmetry::Horizontal), SymmetryMode::Horizontal);
         assert_eq!(to_symmetry_mode(&CliSymmetry::Vertical), SymmetryMode::Vertical);
         assert_eq!(to_symmetry_mode(&CliSymmetry::Quad), SymmetryMode::Quad);
+    }
+
+    #[test]
+    fn test_chars_command_parse() {
+        let cli = Cli::try_parse_from(["kakukuma", "chars"]).unwrap();
+        match cli.command.unwrap() {
+            Command::Chars { category, plain } => {
+                assert!(category.is_none());
+                assert!(!plain);
+            }
+            _ => panic!("Expected Chars command"),
+        }
+    }
+
+    #[test]
+    fn test_chars_command_parse_with_category() {
+        let cli = Cli::try_parse_from(["kakukuma", "chars", "--category", "shade"]).unwrap();
+        match cli.command.unwrap() {
+            Command::Chars { category, plain } => {
+                assert_eq!(category.as_deref(), Some("shade"));
+                assert!(!plain);
+            }
+            _ => panic!("Expected Chars command"),
+        }
+    }
+
+    #[test]
+    fn test_chars_command_parse_plain() {
+        let cli = Cli::try_parse_from(["kakukuma", "chars", "--plain"]).unwrap();
+        match cli.command.unwrap() {
+            Command::Chars { category, plain } => {
+                assert!(category.is_none());
+                assert!(plain);
+            }
+            _ => panic!("Expected Chars command"),
+        }
     }
 }
