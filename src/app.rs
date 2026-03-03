@@ -32,6 +32,8 @@ pub enum AppMode {
     BlockPicker,
     ImportBrowse,
     ImportOptions,
+    CommandPalette,
+    GotoInput,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -134,7 +136,223 @@ pub struct App {
     pub import_color: usize,   // 0=256, 1=16
     pub import_charset: usize, // 0=Full, 1=Half
     pub import_options_cursor: usize, // 0=fit, 1=color, 2=charset
+    // Command palette state
+    pub palette_query: String,
+    pub palette_filtered: Vec<usize>,
+    pub palette_selected_cmd: usize,
+    // Reference layer
+    pub reference_layer: Option<ReferenceLayer>,
+    /// Show startup guidance on blank canvas (set false on first draw or file load)
+    pub show_startup_hint: bool,
+    /// Text input buffer for "Go to" coordinate input
+    pub goto_input: String,
 }
+
+// --- Reference Layer ---
+
+pub struct ReferenceLayer {
+    /// Pre-processed background colors at canvas resolution.
+    /// Indexed [y][x]. Each cell is the original reference color (dimmed at render time).
+    pub colors: Vec<Vec<Option<Rgb>>>,
+    /// Original image path (for project file persistence)
+    #[allow(dead_code)]
+    pub image_path: String,
+    /// Brightness level: 0=dim (25%), 1=medium (50%), 2=bright (75%)
+    pub brightness: u8,
+    /// Whether reference is currently visible
+    pub visible: bool,
+}
+
+/// Dim a color by the given brightness level for reference layer rendering.
+pub fn dim_color(color: &Rgb, brightness: u8) -> Rgb {
+    if brightness == 2 {
+        // 75%
+        Rgb::new(
+            (color.r as u16 * 3 / 4) as u8,
+            (color.g as u16 * 3 / 4) as u8,
+            (color.b as u16 * 3 / 4) as u8,
+        )
+    } else {
+        let scale = match brightness {
+            0 => 4, // 25%
+            1 => 2, // 50%
+            _ => 4,
+        };
+        Rgb::new(color.r / scale, color.g / scale, color.b / scale)
+    }
+}
+
+// --- Command Palette Registry ---
+
+pub struct PaletteCommand {
+    pub name: &'static str,
+    #[allow(dead_code)]
+    pub category: &'static str,
+    pub shortcut: &'static str,
+    pub action: fn(&mut App),
+}
+
+/// Fuzzy subsequence match: each character of `query` must appear in order
+/// in `target`. Spaces in query skip to next word boundary. Case-insensitive.
+pub fn fuzzy_match(query: &str, target: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let target_lower: Vec<char> = target.to_lowercase().chars().collect();
+    let mut ti = 0;
+    for qch in query.to_lowercase().chars() {
+        if qch == ' ' {
+            // Skip to next word boundary in target (next char after a space)
+            while ti < target_lower.len() && target_lower[ti] != ' ' {
+                ti += 1;
+            }
+            // Skip the space itself
+            if ti < target_lower.len() {
+                ti += 1;
+            }
+            continue;
+        }
+        // Find next occurrence of qch in target
+        while ti < target_lower.len() && target_lower[ti] != qch {
+            ti += 1;
+        }
+        if ti >= target_lower.len() {
+            return false;
+        }
+        ti += 1;
+    }
+    true
+}
+
+pub static COMMANDS: &[PaletteCommand] = &[
+    // Tools
+    PaletteCommand { name: "Pencil", category: "Tools", shortcut: "P", action: |app| { app.active_tool = ToolKind::Pencil; app.cancel_tool(); } },
+    PaletteCommand { name: "Eraser", category: "Tools", shortcut: "E", action: |app| { app.active_tool = ToolKind::Eraser; app.cancel_tool(); } },
+    PaletteCommand { name: "Line", category: "Tools", shortcut: "L", action: |app| { app.active_tool = ToolKind::Line; app.cancel_tool(); } },
+    PaletteCommand { name: "Rectangle", category: "Tools", shortcut: "R", action: |app| { app.active_tool = ToolKind::Rectangle; app.cancel_tool(); } },
+    PaletteCommand { name: "Fill", category: "Tools", shortcut: "F", action: |app| { app.active_tool = ToolKind::Fill; app.cancel_tool(); } },
+    PaletteCommand { name: "Eyedropper", category: "Tools", shortcut: "I", action: |app| { app.active_tool = ToolKind::Eyedropper; app.cancel_tool(); } },
+    // Canvas
+    PaletteCommand { name: "New Canvas", category: "Canvas", shortcut: "Ctrl+N", action: |app| {
+        app.new_canvas_width = app.canvas.width;
+        app.new_canvas_height = app.canvas.height;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = app.canvas.width.to_string();
+        app.mode = AppMode::NewCanvas;
+    }},
+    PaletteCommand { name: "Resize Canvas", category: "Canvas", shortcut: "Ctrl+R", action: |app| {
+        app.new_canvas_width = app.canvas.width;
+        app.new_canvas_height = app.canvas.height;
+        app.new_canvas_cursor = 0;
+        app.new_canvas_input = app.canvas.width.to_string();
+        app.mode = AppMode::ResizeCanvas;
+    }},
+    PaletteCommand { name: "Clear Canvas", category: "Canvas", shortcut: "", action: |app| {
+        let w = app.canvas.width;
+        let h = app.canvas.height;
+        for y in 0..h {
+            for x in 0..w {
+                app.canvas.set(x, y, crate::cell::Cell::default());
+            }
+        }
+        app.dirty = true;
+        app.set_status("Canvas cleared");
+    }},
+    PaletteCommand { name: "Go to Coordinate", category: "Canvas", shortcut: "", action: |app| {
+        app.goto_input = String::new();
+        app.mode = AppMode::GotoInput;
+    }},
+    PaletteCommand { name: "Import Image", category: "Canvas", shortcut: "Ctrl+I", action: |app| {
+        app.import_dir = std::env::current_dir().unwrap_or_default();
+        app.import_path = None;
+        app.mode = AppMode::ImportBrowse;
+    }},
+    // File
+    PaletteCommand { name: "Save", category: "File", shortcut: "Ctrl+S", action: |app| {
+        if !app.save_project() {
+            app.text_input = app.project_name.clone().unwrap_or_else(|| "untitled".to_string());
+            app.mode = AppMode::SaveAs;
+        }
+    }},
+    PaletteCommand { name: "Save As", category: "File", shortcut: "", action: |app| {
+        app.text_input = app.project_name.clone().unwrap_or_else(|| "untitled".to_string());
+        app.mode = AppMode::SaveAs;
+    }},
+    PaletteCommand { name: "Open", category: "File", shortcut: "Ctrl+O", action: |app| { app.open_file_dialog(); } },
+    PaletteCommand { name: "Export", category: "File", shortcut: "Ctrl+E", action: |app| {
+        app.export_format = 0;
+        app.export_dest = 0;
+        app.export_cursor = 0;
+        app.export_color_format = 0;
+        app.mode = AppMode::ExportDialog;
+    }},
+    // Edit
+    PaletteCommand { name: "Undo", category: "Edit", shortcut: "Ctrl+Z", action: |app| { app.undo(); } },
+    PaletteCommand { name: "Redo", category: "Edit", shortcut: "Ctrl+Y", action: |app| { app.redo(); } },
+    PaletteCommand { name: "Toggle Filled Rect", category: "Edit", shortcut: "T", action: |app| {
+        app.filled_rect = !app.filled_rect;
+        app.set_status(if app.filled_rect { "Rect: Filled" } else { "Rect: Outline" });
+    }},
+    // View
+    PaletteCommand { name: "Cycle Zoom", category: "View", shortcut: "Z", action: |app| { app.cycle_zoom(); } },
+    PaletteCommand { name: "Cycle Theme", category: "View", shortcut: "Ctrl+T", action: |app| { app.cycle_theme(); } },
+    PaletteCommand { name: "Help", category: "View", shortcut: "?", action: |app| { app.mode = AppMode::Help; } },
+    // Character
+    PaletteCommand { name: "Block Picker", category: "Character", shortcut: "Shift+B", action: |app| { app.open_block_picker(); } },
+    PaletteCommand { name: "Cycle Block", category: "Character", shortcut: "B", action: |app| { app.cycle_block(); } },
+    PaletteCommand { name: "Cycle Shade", category: "Character", shortcut: "G", action: |app| { app.cycle_shade(); } },
+    // Color
+    PaletteCommand { name: "HSL Sliders", category: "Color", shortcut: "S", action: |app| {
+        let (h, s, l) = crate::palette::rgb_to_hsl(app.color.r, app.color.g, app.color.b);
+        app.slider_h = h;
+        app.slider_s = s;
+        app.slider_l = l;
+        app.slider_active = 0;
+        app.mode = AppMode::ColorSliders;
+    }},
+    PaletteCommand { name: "Hex Color Input", category: "Color", shortcut: "X", action: |app| {
+        app.text_input = String::new();
+        app.mode = AppMode::HexColorInput;
+    }},
+    PaletteCommand { name: "Palette Manager", category: "Color", shortcut: "C", action: |app| { app.open_palette_dialog(); } },
+    PaletteCommand { name: "Add to Palette", category: "Color", shortcut: "A", action: |app| { app.add_color_to_custom_palette(); } },
+    // Symmetry
+    PaletteCommand { name: "Symmetry Horizontal", category: "Symmetry", shortcut: "H", action: |app| {
+        app.symmetry = app.symmetry.toggle_horizontal();
+        app.set_status(&format!("Symmetry: {}", app.symmetry.label()));
+    }},
+    PaletteCommand { name: "Symmetry Vertical", category: "Symmetry", shortcut: "V", action: |app| {
+        app.symmetry = app.symmetry.toggle_vertical();
+        app.set_status(&format!("Symmetry: {}", app.symmetry.label()));
+    }},
+    PaletteCommand { name: "Symmetry Off", category: "Symmetry", shortcut: "", action: |app| {
+        app.symmetry = SymmetryMode::Off;
+        app.set_status("Symmetry: Off");
+    }},
+    // Reference
+    PaletteCommand { name: "Toggle Reference", category: "Reference", shortcut: "", action: |app| {
+        let msg = if let Some(ref mut layer) = app.reference_layer {
+            layer.visible = !layer.visible;
+            if layer.visible { "Reference: Visible" } else { "Reference: Hidden" }
+        } else {
+            "No reference image loaded"
+        };
+        app.set_status(msg);
+    }},
+    PaletteCommand { name: "Reference Brightness", category: "Reference", shortcut: "", action: |app| {
+        let msg = if let Some(ref mut layer) = app.reference_layer {
+            layer.brightness = (layer.brightness + 1) % 3;
+            match layer.brightness {
+                0 => "Reference brightness: Dim (25%)",
+                1 => "Reference brightness: Medium (50%)",
+                _ => "Reference brightness: Bright (75%)",
+            }
+        } else {
+            "No reference image loaded"
+        };
+        app.set_status(msg);
+    }},
+];
 
 impl App {
     pub fn new() -> Self {
@@ -201,6 +419,12 @@ impl App {
             import_color: 0,
             import_charset: 1, // Default to HalfBlocks
             import_options_cursor: 0,
+            palette_query: String::new(),
+            palette_filtered: (0..COMMANDS.len()).collect(),
+            palette_selected_cmd: 0,
+            reference_layer: None,
+            show_startup_hint: true,
+            goto_input: String::new(),
         };
         app.rebuild_palette_layout();
         app
@@ -407,6 +631,7 @@ impl App {
 
     /// Apply a tool action at (x, y), handling symmetry and history.
     pub fn apply_tool(&mut self, x: usize, y: usize) {
+        self.show_startup_hint = false;
         let fg = Some(self.color);
         let bg = None;
         let mutations = match self.active_tool {
@@ -751,12 +976,57 @@ impl App {
                 self.dirty = false;
                 self.history = History::new();
                 self.auto_save_ticks = 0;
+                self.show_startup_hint = false;
+                // Load reference image if present
+                self.reference_layer = None;
+                if let Some(ref ref_path) = project.reference_image {
+                    let project_dir = path.parent().unwrap_or(Path::new("."));
+                    let abs_ref = project_dir.join(ref_path);
+                    if let Err(e) = self.load_reference(&abs_ref) {
+                        self.set_status_with_level(
+                            &format!("Reference image not loaded: {}", e),
+                            MessageLevel::Warning,
+                        );
+                    }
+                }
                 self.set_status_with_level(&format!("Opened: {}", filename), MessageLevel::Success);
             }
             Err(e) => {
                 self.set_status_with_level(&format!("Load failed: {}", e), MessageLevel::Error);
             }
         }
+    }
+
+    /// Load a reference image and pre-process it into a color grid at canvas resolution.
+    pub fn load_reference(&mut self, path: &Path) -> Result<(), String> {
+        let img = image::open(path)
+            .map_err(|e| format!("Failed to load reference: {}", e))?;
+        let resized = img.resize_exact(
+            self.canvas.width as u32,
+            self.canvas.height as u32,
+            image::imageops::FilterType::Triangle,
+        );
+        let rgba = resized.to_rgba8();
+        let mut colors = Vec::with_capacity(self.canvas.height);
+        for y in 0..self.canvas.height {
+            let mut row = Vec::with_capacity(self.canvas.width);
+            for x in 0..self.canvas.width {
+                let pixel = rgba.get_pixel(x as u32, y as u32);
+                if pixel[3] < 128 {
+                    row.push(None); // Transparent
+                } else {
+                    row.push(Some(Rgb::new(pixel[0], pixel[1], pixel[2])));
+                }
+            }
+            colors.push(row);
+        }
+        self.reference_layer = Some(ReferenceLayer {
+            colors,
+            image_path: path.to_string_lossy().to_string(),
+            brightness: 0,
+            visible: true,
+        });
+        Ok(())
     }
 
     /// Populate file dialog with .kaku files from current directory.
@@ -998,6 +1268,78 @@ mod tests {
     }
 
     #[test]
+    fn test_fuzzy_match_basic() {
+        assert!(fuzzy_match("sav", "Save"));
+        assert!(fuzzy_match("sav", "Save As"));
+        assert!(fuzzy_match("", "anything"));
+        assert!(!fuzzy_match("xyz", "Save"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_case_insensitive() {
+        assert!(fuzzy_match("SAV", "save"));
+        assert!(fuzzy_match("sav", "SAVE"));
+        assert!(fuzzy_match("Pen", "pencil"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_space_skip() {
+        assert!(fuzzy_match("sym h", "Symmetry Horizontal"));
+        assert!(fuzzy_match("new c", "New Canvas"));
+        assert!(!fuzzy_match("sym q", "Symmetry Horizontal"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_subsequence() {
+        assert!(fuzzy_match("hl", "Help"));
+        assert!(fuzzy_match("pc", "Pencil"));
+        assert!(fuzzy_match("fl", "Fill"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_exact() {
+        assert!(fuzzy_match("Pencil", "Pencil"));
+        assert!(fuzzy_match("pencil", "Pencil"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_no_match() {
+        assert!(!fuzzy_match("zzz", "Pencil"));
+        assert!(!fuzzy_match("ab", "ba"));
+    }
+
+    #[test]
+    fn test_command_registry_tools_reachable() {
+        // Every ToolKind should be reachable via a COMMANDS entry
+        let tool_names = ["Pencil", "Eraser", "Line", "Rectangle", "Fill", "Eyedropper"];
+        for tool_name in &tool_names {
+            assert!(
+                COMMANDS.iter().any(|cmd| cmd.name == *tool_name),
+                "Tool '{}' not found in COMMANDS", tool_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_registry_symmetry_reachable() {
+        let sym_names = ["Symmetry Horizontal", "Symmetry Vertical", "Symmetry Off"];
+        for name in &sym_names {
+            assert!(
+                COMMANDS.iter().any(|cmd| cmd.name == *name),
+                "Symmetry '{}' not found in COMMANDS", name
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_palette_state_init() {
+        let app = App::new();
+        assert!(app.palette_query.is_empty());
+        assert_eq!(app.palette_filtered.len(), COMMANDS.len());
+        assert_eq!(app.palette_selected_cmd, 0);
+    }
+
+    #[test]
     fn test_recent_colors_empty_no_section() {
         let app = App::new();
         // No recent colors means no Recent section header
@@ -1006,5 +1348,66 @@ mod tests {
                 assert_ne!(*section, PaletteSection::Recent);
             }
         }
+    }
+
+    // --- Cycle 018: Reference layer tests ---
+
+    #[test]
+    fn test_dim_color_brightness_0() {
+        let color = Rgb::new(200, 100, 80);
+        let dimmed = dim_color(&color, 0);
+        assert_eq!(dimmed, Rgb::new(50, 25, 20)); // 25%
+    }
+
+    #[test]
+    fn test_dim_color_brightness_1() {
+        let color = Rgb::new(200, 100, 80);
+        let dimmed = dim_color(&color, 1);
+        assert_eq!(dimmed, Rgb::new(100, 50, 40)); // 50%
+    }
+
+    #[test]
+    fn test_dim_color_brightness_2() {
+        let color = Rgb::new(200, 100, 80);
+        let dimmed = dim_color(&color, 2);
+        assert_eq!(dimmed, Rgb::new(150, 75, 60)); // 75%
+    }
+
+    #[test]
+    fn test_reference_layer_init_none() {
+        let app = App::new();
+        assert!(app.reference_layer.is_none());
+    }
+
+    #[test]
+    fn test_command_registry_reference_reachable() {
+        let ref_names = ["Toggle Reference", "Reference Brightness"];
+        for name in &ref_names {
+            assert!(
+                COMMANDS.iter().any(|cmd| cmd.name == *name),
+                "Reference command '{}' not found in COMMANDS", name
+            );
+        }
+    }
+
+    #[test]
+    fn test_startup_hint_true_on_new() {
+        let app = App::new();
+        assert!(app.show_startup_hint, "show_startup_hint should be true on fresh App");
+    }
+
+    #[test]
+    fn test_startup_hint_false_after_draw() {
+        let mut app = App::new();
+        app.apply_tool(0, 0);
+        assert!(!app.show_startup_hint, "show_startup_hint should be false after apply_tool");
+    }
+
+    #[test]
+    fn test_command_registry_goto_reachable() {
+        assert!(
+            COMMANDS.iter().any(|cmd| cmd.name == "Go to Coordinate"),
+            "Go to Coordinate not found in COMMANDS"
+        );
     }
 }

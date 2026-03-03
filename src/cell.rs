@@ -57,6 +57,59 @@ pub mod blocks {
 
     /// Category sizes for the block picker (Primary=5, Shades=3, Vert=6, Horiz=6).
     pub const CATEGORY_SIZES: [usize; 4] = [5, 3, 6, 6];
+
+    /// Metadata for a single block character.
+    pub struct CharInfo {
+        pub ch: char,
+        pub name: &'static str,
+        pub alt: &'static str,
+        pub category: &'static str,
+        pub codepoint: &'static str,
+    }
+
+    /// Complete metadata for all 20 block characters.
+    pub const CHAR_INFO: [CharInfo; 20] = [
+        CharInfo { ch: FULL,         name: "full",         alt: "block",  category: "primary",         codepoint: "U+2588" },
+        CharInfo { ch: UPPER_HALF,   name: "upper-half",   alt: "top",    category: "primary",         codepoint: "U+2580" },
+        CharInfo { ch: LOWER_HALF,   name: "lower-half",   alt: "bottom", category: "primary",         codepoint: "U+2584" },
+        CharInfo { ch: LEFT_HALF,    name: "left-half",    alt: "left",   category: "primary",         codepoint: "U+258C" },
+        CharInfo { ch: RIGHT_HALF,   name: "right-half",   alt: "right",  category: "primary",         codepoint: "U+2590" },
+        CharInfo { ch: SHADE_LIGHT,  name: "shade-light",  alt: "light",  category: "shade",           codepoint: "U+2591" },
+        CharInfo { ch: SHADE_MEDIUM, name: "shade-medium", alt: "medium", category: "shade",           codepoint: "U+2592" },
+        CharInfo { ch: SHADE_DARK,   name: "shade-dark",   alt: "dark",   category: "shade",           codepoint: "U+2593" },
+        CharInfo { ch: LOWER_1_8,    name: "lower-1-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2581" },
+        CharInfo { ch: LOWER_1_4,    name: "lower-1-4",    alt: "",       category: "vertical-fill",   codepoint: "U+2582" },
+        CharInfo { ch: LOWER_3_8,    name: "lower-3-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2583" },
+        CharInfo { ch: LOWER_5_8,    name: "lower-5-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2585" },
+        CharInfo { ch: LOWER_3_4,    name: "lower-3-4",    alt: "",       category: "vertical-fill",   codepoint: "U+2586" },
+        CharInfo { ch: LOWER_7_8,    name: "lower-7-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2587" },
+        CharInfo { ch: LEFT_7_8,     name: "left-7-8",     alt: "",       category: "horizontal-fill", codepoint: "U+2589" },
+        CharInfo { ch: LEFT_3_4,     name: "left-3-4",     alt: "",       category: "horizontal-fill", codepoint: "U+258A" },
+        CharInfo { ch: LEFT_5_8,     name: "left-5-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258B" },
+        CharInfo { ch: LEFT_3_8,     name: "left-3-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258D" },
+        CharInfo { ch: LEFT_1_4,     name: "left-1-4",     alt: "",       category: "horizontal-fill", codepoint: "U+258E" },
+        CharInfo { ch: LEFT_1_8,     name: "left-1-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258F" },
+    ];
+
+    /// Resolve a character alias to a char. Returns None if not found.
+    /// Single-char input returns the char directly (backward compat).
+    pub fn resolve_char_alias(input: &str) -> Option<char> {
+        if input.chars().count() == 1 {
+            return Some(input.chars().next().unwrap());
+        }
+        let lower = input.to_lowercase();
+        CHAR_INFO.iter().find(|info| {
+            info.name == lower || (!info.alt.is_empty() && info.alt == lower)
+        }).map(|info| info.ch)
+    }
+
+    /// Look up CharInfo by char. Returns None for non-block chars.
+    pub fn char_info(ch: char) -> Option<&'static CharInfo> {
+        CHAR_INFO.iter().find(|info| info.ch == ch)
+    }
+
+    /// All distinct category names in order.
+    pub const CATEGORIES: [&str; 4] = ["primary", "shade", "vertical-fill", "horizontal-fill"];
 }
 
 /// Classification helpers for rendering.
@@ -307,6 +360,25 @@ pub fn color256_to_rgb(idx: u8) -> Rgb {
         }
     };
     Rgb { r, g, b }
+}
+
+/// Find the nearest ANSI 16 color index for an Rgb value (Euclidean distance).
+pub fn nearest_16(color: &Rgb) -> u8 {
+    let mut best_idx: u8 = 0;
+    let mut best_dist = u32::MAX;
+
+    for (i, &(r, g, b)) in ANSI_16_RGB.iter().enumerate() {
+        let dr = color.r as i32 - r as i32;
+        let dg = color.g as i32 - g as i32;
+        let db = color.b as i32 - b as i32;
+        let dist = (dr * dr + dg * dg + db * db) as u32;
+        if dist < best_dist {
+            best_dist = dist;
+            best_idx = i as u8;
+        }
+    }
+
+    best_idx
 }
 
 /// Find the nearest xterm-256 color index for an Rgb value (Euclidean distance).
@@ -796,5 +868,60 @@ mod tests {
     #[test]
     fn parse_hex_empty() {
         assert_eq!(parse_hex_color(""), None);
+    }
+
+    // --- resolve_char_alias tests ---
+
+    #[test]
+    fn test_resolve_alias_primary_name() {
+        assert_eq!(blocks::resolve_char_alias("full"), Some(blocks::FULL));
+        assert_eq!(blocks::resolve_char_alias("shade-light"), Some(blocks::SHADE_LIGHT));
+        assert_eq!(blocks::resolve_char_alias("lower-3-4"), Some(blocks::LOWER_3_4));
+    }
+
+    #[test]
+    fn test_resolve_alias_alt_name() {
+        assert_eq!(blocks::resolve_char_alias("block"), Some(blocks::FULL));
+        assert_eq!(blocks::resolve_char_alias("top"), Some(blocks::UPPER_HALF));
+        assert_eq!(blocks::resolve_char_alias("dark"), Some(blocks::SHADE_DARK));
+    }
+
+    #[test]
+    fn test_resolve_alias_single_char_passthrough() {
+        assert_eq!(blocks::resolve_char_alias("█"), Some('█'));
+        assert_eq!(blocks::resolve_char_alias("a"), Some('a'));
+    }
+
+    #[test]
+    fn test_resolve_alias_case_insensitive() {
+        assert_eq!(blocks::resolve_char_alias("FULL"), Some(blocks::FULL));
+        assert_eq!(blocks::resolve_char_alias("Shade-Light"), Some(blocks::SHADE_LIGHT));
+    }
+
+    #[test]
+    fn test_resolve_alias_unknown() {
+        assert_eq!(blocks::resolve_char_alias("nope"), None);
+        assert_eq!(blocks::resolve_char_alias("unknown"), None);
+    }
+
+    #[test]
+    fn test_char_info_known() {
+        let info = blocks::char_info(blocks::FULL).unwrap();
+        assert_eq!(info.name, "full");
+        assert_eq!(info.category, "primary");
+        assert_eq!(info.codepoint, "U+2588");
+    }
+
+    #[test]
+    fn test_char_info_unknown() {
+        assert!(blocks::char_info('a').is_none());
+        assert!(blocks::char_info(' ').is_none());
+    }
+
+    #[test]
+    fn test_char_info_covers_all_blocks() {
+        for &ch in &blocks::ALL {
+            assert!(blocks::char_info(ch).is_some(), "Missing CharInfo for {:?}", ch);
+        }
     }
 }

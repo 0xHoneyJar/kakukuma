@@ -189,7 +189,7 @@ pub fn info_lines(app: &App) -> Vec<Line<'static>> {
     vec![
         line1,
         center_line("\u{2191}\u{2193} Browse", dim),
-        center_line("[S]liders", dim),
+        center_line("[S]liders [X] Hex", dim),
         center_line("[C]ustom", dim),
         center_line("[A]dd color", dim),
     ]
