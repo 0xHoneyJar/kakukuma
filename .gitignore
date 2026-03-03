@@ -19,28 +19,6 @@ Thumbs.db
 # Autosave files
 *.autosave
 
-# Loa framework
-.claude/
-.beads/
-grimoires/
-simstim/
-docs/
-.loa.config.yaml
-.loa.config.yaml.example
-.loa-version.json
-CLAUDE.md
-PROCESS.md
-CONTRIBUTING.md
-SECURITY.md
-CHANGELOG.md
-.gitattributes
-.github/
-.gitleaksignore
-.trufflehog.yaml
-
-# Loa test suites (but allow Cargo integration tests)
-# tests/
-
 # Test art files
 *.kaku
 *.ans
