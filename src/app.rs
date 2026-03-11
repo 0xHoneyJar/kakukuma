@@ -133,9 +133,12 @@ pub struct App {
     pub import_path: Option<std::path::PathBuf>,
     pub import_dir: std::path::PathBuf,
     pub import_fit: usize,     // 0=FitToCanvas, 1=Custom
-    pub import_color: usize,   // 0=256, 1=16
+    pub import_color: usize,   // 0=TrueColor, 1=256, 2=16
     pub import_charset: usize, // 0=Full, 1=Half
-    pub import_options_cursor: usize, // 0=fit, 1=color, 2=charset
+    pub import_normalize: bool,
+    pub import_preserve_hue: bool,
+    pub import_posterize: usize, // 0=off, 1=8, 2=12, 3=16, 4=24
+    pub import_options_cursor: usize, // 0=fit, 1=color, 2=charset, 3=normalize, 4=hue-preserve, 5=posterize
     // Command palette state
     pub palette_query: String,
     pub palette_filtered: Vec<usize>,
@@ -146,6 +149,10 @@ pub struct App {
     pub show_startup_hint: bool,
     /// Text input buffer for "Go to" coordinate input
     pub goto_input: String,
+    /// Paste detection buffer — accumulates rapid character input that looks like a file path
+    pub paste_buffer: String,
+    /// Deadline for paste buffer flush (None = not accumulating)
+    pub paste_deadline: Option<std::time::Instant>,
 }
 
 // --- Reference Layer ---
@@ -231,7 +238,7 @@ pub static COMMANDS: &[PaletteCommand] = &[
     PaletteCommand { name: "Line", category: "Tools", shortcut: "L", action: |app| { app.active_tool = ToolKind::Line; app.cancel_tool(); } },
     PaletteCommand { name: "Rectangle", category: "Tools", shortcut: "R", action: |app| { app.active_tool = ToolKind::Rectangle; app.cancel_tool(); } },
     PaletteCommand { name: "Fill", category: "Tools", shortcut: "F", action: |app| { app.active_tool = ToolKind::Fill; app.cancel_tool(); } },
-    PaletteCommand { name: "Eyedropper", category: "Tools", shortcut: "I", action: |app| { app.active_tool = ToolKind::Eyedropper; app.cancel_tool(); } },
+    PaletteCommand { name: "Eyedropper", category: "Tools", shortcut: "K", action: |app| { app.active_tool = ToolKind::Eyedropper; app.cancel_tool(); } },
     // Canvas
     PaletteCommand { name: "New Canvas", category: "Canvas", shortcut: "Ctrl+N", action: |app| {
         app.new_canvas_width = app.canvas.width;
@@ -262,7 +269,7 @@ pub static COMMANDS: &[PaletteCommand] = &[
         app.goto_input = String::new();
         app.mode = AppMode::GotoInput;
     }},
-    PaletteCommand { name: "Import Image", category: "Canvas", shortcut: "Ctrl+I", action: |app| {
+    PaletteCommand { name: "Import Image", category: "Canvas", shortcut: "I", action: |app| {
         app.import_dir = std::env::current_dir().unwrap_or_default();
         app.import_path = None;
         app.mode = AppMode::ImportBrowse;
@@ -416,8 +423,11 @@ impl App {
             import_path: None,
             import_dir: std::env::current_dir().unwrap_or_default(),
             import_fit: 0,
-            import_color: 0,
+            import_color: 0, // Default to TrueColor
             import_charset: 1, // Default to HalfBlocks
+            import_normalize: true,
+            import_preserve_hue: true,
+            import_posterize: 2, // Default to 12 colors
             import_options_cursor: 0,
             palette_query: String::new(),
             palette_filtered: (0..COMMANDS.len()).collect(),
@@ -425,6 +435,8 @@ impl App {
             reference_layer: None,
             show_startup_hint: true,
             goto_input: String::new(),
+            paste_buffer: String::new(),
+            paste_deadline: None,
         };
         app.rebuild_palette_layout();
         app

@@ -383,15 +383,42 @@ pub fn nearest_16(color: &Rgb) -> u8 {
 
 /// Find the nearest xterm-256 color index for an Rgb value (Euclidean distance).
 pub fn nearest_256(color: &Rgb) -> u8 {
+    nearest_256_inner(color, false)
+}
+
+/// Find the nearest xterm-256 color index, preferring chromatic matches over grays
+/// when the source pixel has visible hue. Trades brightness accuracy for color accuracy.
+pub fn nearest_256_hue(color: &Rgb) -> u8 {
+    nearest_256_inner(color, true)
+}
+
+fn nearest_256_inner(color: &Rgb, preserve_hue: bool) -> u8 {
     let mut best_idx: u8 = 0;
-    let mut best_dist = u32::MAX;
+    let mut best_dist = f32::MAX;
+
+    // Source chromaticity: how "colorful" is the pixel?
+    let src_max = color.r.max(color.g).max(color.b) as f32;
+    let src_min = color.r.min(color.g).min(color.b) as f32;
+    let src_sat = if src_max > 0.0 { (src_max - src_min) / src_max } else { 0.0 };
 
     for i in 0u16..=255 {
         let c = color256_to_rgb(i as u8);
-        let dr = color.r as i32 - c.r as i32;
-        let dg = color.g as i32 - c.g as i32;
-        let db = color.b as i32 - c.b as i32;
-        let dist = (dr * dr + dg * dg + db * db) as u32;
+        let dr = color.r as f32 - c.r as f32;
+        let dg = color.g as f32 - c.g as f32;
+        let db = color.b as f32 - c.b as f32;
+        let mut dist = dr * dr + dg * dg + db * db;
+
+        if preserve_hue && src_sat > 0.12 {
+            let c_max = c.r.max(c.g).max(c.b) as f32;
+            let c_min = c.r.min(c.g).min(c.b) as f32;
+            let c_sat = if c_max > 0.0 { (c_max - c_min) / c_max } else { 0.0 };
+
+            if c_sat < 0.05 {
+                // Source has color but candidate is gray → heavy penalty
+                dist += 8000.0;
+            }
+        }
+
         if dist < best_dist {
             best_dist = dist;
             best_idx = i as u8;
