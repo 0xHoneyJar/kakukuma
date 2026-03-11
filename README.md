@@ -19,7 +19,7 @@ Terminal-native ANSI art editor using Unicode half-block characters for 2x verti
 - **Undo/redo** — full stroke-level history
 - **Project files** — `.kaku` format with auto-save recovery
 - **Multi-format export** — ANSI art, plain text, JSON, and PNG with configurable color depth
-- **Image import** — load PNG/JPEG onto canvas with color quantization
+- **Image import & render** — load PNG/JPEG onto canvas, or render directly to ANSI art with terminal-aware color
 - **WASD navigation** — keyboard-driven canvas cursor with viewport scrolling
 - **CLI toolchain** — scriptable commands for batch operations, export, import, preview, and more
 - **Library crate** — `use kakukuma::{Canvas, Cell, Rgb, ...}` for external consumers
@@ -54,8 +54,11 @@ kakukuma export myart.kaku out.png
 # Export to ANSI art
 kakukuma export myart.kaku out.ans
 
-# Import an image
-kakukuma import photo.png --width 48 --height 32
+# Render an image as ANSI art (one step, auto-detects terminal colors)
+kakukuma render photo.png --width 60 --height 20
+
+# Import an image into a project file for editing
+kakukuma import photo.png art.kaku
 
 # List available block characters
 kakukuma chars --plain
@@ -134,6 +137,7 @@ kakukuma batch operations.json myart.kaku
 | `preview` | Render canvas to stdout (ANSI, plain, JSON) |
 | `export` | Export to file (ANSI, plain, JSON, PNG) |
 | `import` | Import image file onto canvas |
+| `render` | Convert image to ANSI art on stdout (no intermediate file) |
 | `inspect` | Query cell data at coordinates |
 | `resize` | Resize canvas dimensions |
 | `clear` | Reset all cells to default |
@@ -145,6 +149,45 @@ kakukuma batch operations.json myart.kaku
 | `undo` / `redo` | CLI undo/redo with operation log |
 | `history` | Show operation log |
 | `palette` | Palette management |
+
+## Image to ANSI Art
+
+Kakukuma converts images (PNG, JPEG, etc.) into terminal-displayable ANSI art using Unicode half-block characters for 2x vertical resolution.
+
+### Quick render (one command)
+
+```bash
+# Auto-detects your terminal's color support
+kakukuma render photo.png
+
+# Control output size
+kakukuma render photo.png --width 60 --height 20
+```
+
+### Import for editing
+
+```bash
+# Import into a .kaku file to edit in the TUI
+kakukuma import photo.png art.kaku
+
+# Then export when done
+kakukuma export art.kaku art.ans
+```
+
+### How color works
+
+Color format is **auto-detected** from your terminal:
+
+| Terminal | `COLORTERM` env var | Format used |
+|----------|-------------------|-------------|
+| iTerm2, Kitty, Alacritty, WezTerm | `truecolor` or `24bit` | 24-bit RGB (`\e[38;2;r;g;bm`) |
+| macOS Terminal.app, most others | unset or other | 256-color with hue preservation (`\e[38;5;Nm`) |
+
+Override with `--color-format truecolor`, `--color-format 256`, `--color-format 16`, etc.
+
+### Smart defaults
+
+Import and render apply **brightness normalization** and **hue-preserving quantization** by default — this makes photographs look good without manual tuning. Disable with `--no-normalize` or `--no-preserve-hue` if you're working with pre-processed pixel art.
 
 ## File Formats
 

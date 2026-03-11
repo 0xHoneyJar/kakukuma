@@ -66,8 +66,8 @@ pub enum Command {
         /// Preview subregion (x1,y1,x2,y2)
         #[arg(long, value_parser = parse_region)]
         region: Option<(usize, usize, usize, usize)>,
-        /// Color depth for ANSI output
-        #[arg(long, default_value = "truecolor")]
+        /// Color depth for ANSI output (auto-detects terminal support)
+        #[arg(long, default_value = "auto")]
         color_format: CliColorFormat,
     },
 
@@ -101,8 +101,8 @@ pub enum Command {
         /// Export format (auto-detects from file extension when "auto")
         #[arg(long, default_value = "auto")]
         format: PreviewFormat,
-        /// Color depth for ANSI output
-        #[arg(long, default_value = "truecolor")]
+        /// Color depth for ANSI output (auto-detects terminal support)
+        #[arg(long, default_value = "auto")]
         color_format: CliColorFormat,
         /// Cell size for PNG export (WxH pixels)
         #[arg(long, default_value = "8x16")]
@@ -207,9 +207,51 @@ pub enum Command {
         /// Canvas height (8-128)
         #[arg(long, default_value_t = 32)]
         height: usize,
-        /// Color quantization (256 or 16)
-        #[arg(long, default_value = "256")]
+        /// Color quantization mode (default: truecolor stores full RGB)
+        #[arg(long, default_value = "truecolor")]
         quantize: CliColorFormat,
+        /// Color saturation boost (1.0=none, 2.0=double). Helps dark images survive 256-color palette.
+        #[arg(long, default_value_t = 1.0)]
+        boost: f32,
+        /// Disable hue-preserving color matching (on by default)
+        #[arg(long)]
+        no_preserve_hue: bool,
+        /// Disable brightness normalization (on by default)
+        #[arg(long)]
+        no_normalize: bool,
+        /// Reduce to N distinct colors via k-means (2-64). Makes art cleaner and more readable.
+        #[arg(long)]
+        posterize: Option<usize>,
+        /// Use mosaic mode: average each grid region instead of per-pixel sampling.
+        #[arg(long)]
+        mosaic: bool,
+    },
+
+    /// Convert an image directly to ANSI art on stdout (no intermediate file)
+    Render {
+        /// Path to image file (PNG, JPEG, etc.)
+        image: String,
+        /// Output width in characters
+        #[arg(long, default_value_t = 48)]
+        width: usize,
+        /// Output height in cell rows
+        #[arg(long, default_value_t = 24)]
+        height: usize,
+        /// Color format (auto-detects terminal support by default)
+        #[arg(long, default_value = "auto")]
+        color_format: CliColorFormat,
+        /// Disable brightness normalization
+        #[arg(long)]
+        no_normalize: bool,
+        /// Disable hue-preserving color matching
+        #[arg(long)]
+        no_preserve_hue: bool,
+        /// Color saturation boost (1.0=none, 2.0=double)
+        #[arg(long, default_value_t = 1.0)]
+        boost: f32,
+        /// Reduce to N distinct colors via k-means (2-64). Makes art cleaner and more readable.
+        #[arg(long)]
+        posterize: Option<usize>,
     },
 
     /// Palette management
@@ -356,9 +398,14 @@ pub enum PreviewFormat {
 
 #[derive(ValueEnum, Clone, Debug)]
 pub enum CliColorFormat {
+    /// Auto-detect terminal color support
+    Auto,
     Truecolor,
     #[value(name = "256")]
     Color256,
+    /// 256-color with hue-preserving quantization (better for dark/colorful images)
+    #[value(name = "256-hue")]
+    Color256Hue,
     #[value(name = "16")]
     Color16,
 }
@@ -471,8 +518,10 @@ pub fn to_symmetry_mode(s: &CliSymmetry) -> SymmetryMode {
 
 pub fn to_color_format(f: &CliColorFormat) -> ColorFormat {
     match f {
+        CliColorFormat::Auto => ColorFormat::Auto,
         CliColorFormat::Truecolor => ColorFormat::TrueColor,
         CliColorFormat::Color256 => ColorFormat::Color256,
+        CliColorFormat::Color256Hue => ColorFormat::Color256Hue,
         CliColorFormat::Color16 => ColorFormat::Color16,
     }
 }
@@ -542,10 +591,13 @@ pub fn run(cmd: Command) -> io::Result<()> {
             cmd_resize(&file, width, height, size)
         }
         Command::Clear { file, region } => cmd_clear(&file, region),
-        Command::Import { image, output, output_flag, width, height, quantize } => {
+        Command::Import { image, output, output_flag, width, height, quantize, boost, no_preserve_hue, no_normalize, posterize, mosaic } => {
             let out = output.or(output_flag)
                 .unwrap_or_else(|| cli_error("Output path required. Usage: kakukuma import <IMAGE> <OUTPUT>"));
-            cmd_import(&image, &out, width, height, &quantize)
+            cmd_import(&image, &out, width, height, &quantize, boost, !no_preserve_hue, !no_normalize, posterize, mosaic)
+        }
+        Command::Render { image, width, height, color_format, no_normalize, no_preserve_hue, boost, posterize } => {
+            cmd_render(&image, width, height, &color_format, !no_normalize, !no_preserve_hue, boost, posterize)
         }
         Command::Palette { action } => palette_cmd::run(action),
         Command::Batch { file, commands, dry_run } => batch::run_batch(&file, &commands, dry_run),
@@ -642,6 +694,11 @@ fn cmd_import(
     width: usize,
     height: usize,
     quantize: &CliColorFormat,
+    boost: f32,
+    preserve_hue: bool,
+    normalize: bool,
+    posterize: Option<usize>,
+    mosaic: bool,
 ) -> io::Result<()> {
     let img_path = Path::new(image);
     if !img_path.exists() {
@@ -651,20 +708,29 @@ fn cmd_import(
     let out_path = Path::new(output);
 
     let color_mode = match quantize {
+        CliColorFormat::Auto | CliColorFormat::Truecolor => ImportColorMode::TrueColor,
+        CliColorFormat::Color256 | CliColorFormat::Color256Hue => ImportColorMode::Color256,
         CliColorFormat::Color16 => ImportColorMode::Color16,
-        _ => ImportColorMode::Color256,
     };
 
     let options = ImportOptions {
         fit_mode: FitMode::FitToCanvas,
         color_mode,
+        color_boost: boost,
+        preserve_hue,
+        normalize,
+        posterize,
         ..ImportOptions::default()
     };
 
     let w = width.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
     let h = height.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
 
-    let cells = crate::import::import_image(img_path, w, h, &options)
+    let cells = if mosaic {
+        crate::import::import_mosaic(img_path, w, h, &options)
+    } else {
+        crate::import::import_image(img_path, w, h, &options)
+    }
         .map_err(|e| {
             cli_error(&format!("Import failed: {}", e));
         })
@@ -694,6 +760,68 @@ fn cmd_import(
         "color_mode": format!("{:?}", color_mode),
     });
     println!("{}", serde_json::to_string(&json).unwrap());
+    Ok(())
+}
+
+fn cmd_render(
+    image: &str,
+    width: usize,
+    height: usize,
+    color_format: &CliColorFormat,
+    normalize: bool,
+    preserve_hue: bool,
+    boost: f32,
+    posterize: Option<usize>,
+) -> io::Result<()> {
+    let img_path = Path::new(image);
+    if !img_path.exists() {
+        cli_error(&format!("Image not found: '{}'", image));
+    }
+
+    let options = ImportOptions {
+        fit_mode: FitMode::FitToCanvas,
+        color_mode: ImportColorMode::TrueColor,
+        color_boost: boost,
+        preserve_hue,
+        normalize,
+        posterize,
+        ..ImportOptions::default()
+    };
+
+    let w = width.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
+    let h = height.clamp(crate::canvas::MIN_DIMENSION, crate::canvas::MAX_DIMENSION);
+
+    let cells = crate::import::import_image(img_path, w, h, &options)
+        .map_err(|e| {
+            cli_error(&format!("Render failed: {}", e));
+        })
+        .unwrap();
+
+    let mut canvas = Canvas::new_with_size(w, h);
+    for (y, row) in cells.iter().enumerate() {
+        for (x, cell) in row.iter().enumerate() {
+            canvas.set(x, y, *cell);
+        }
+    }
+
+    let cf = to_color_format(color_format);
+    let resolved = crate::export::resolve_color_format(cf);
+    let output = crate::export::to_ansi(&canvas, resolved);
+    print!("{}", output);
+
+    let cf_str = match resolved {
+        ColorFormat::TrueColor => "truecolor",
+        ColorFormat::Color256 => "256",
+        ColorFormat::Color256Hue => "256-hue",
+        ColorFormat::Color16 => "16",
+        ColorFormat::Auto => "auto",
+    };
+    eprintln!("{}", serde_json::to_string(&serde_json::json!({
+        "width": w,
+        "height": h,
+        "color_format": cf_str,
+    })).unwrap());
+
     Ok(())
 }
 

@@ -187,10 +187,74 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
     }
 
     match event {
-        Event::Key(key) => handle_key(app, key),
+        Event::Key(key) => {
+            // Paste buffer: accumulate rapid characters that look like a file path
+            if app.paste_deadline.is_some() {
+                if let KeyCode::Char(c) = key.code {
+                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.paste_buffer.push(c);
+                        app.paste_deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(50));
+                        return;
+                    }
+                }
+                // Non-character key while buffering — flush and process
+                try_flush_paste(app);
+            }
+            // Start paste detection: '/' or '~' in Normal mode begins path accumulation
+            if app.mode == AppMode::Normal
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                if let KeyCode::Char(c @ ('/' | '~')) = key.code {
+                    app.paste_buffer.clear();
+                    app.paste_buffer.push(c);
+                    app.paste_deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(50));
+                    return;
+                }
+            }
+            handle_key(app, key);
+        }
         Event::Mouse(mouse) => handle_mouse(app, mouse, canvas_area),
+        Event::Paste(text) => handle_paste(app, text),
         Event::Resize(_, _) => {} // Layout handles this automatically
         _ => {}
+    }
+}
+
+/// Handle bracketed paste — if it looks like an image path, open import options directly.
+fn handle_paste(app: &mut App, text: String) {
+    let path = text.trim().to_string();
+    let path = path.trim_matches('\'').trim_matches('"').to_string();
+    let p = std::path::PathBuf::from(&path);
+    if p.is_file() && is_image_file(&path) {
+        app.import_path = Some(p);
+        app.import_options_cursor = 0;
+        app.mode = AppMode::ImportOptions;
+    }
+}
+
+/// Check if the paste buffer deadline has expired and flush it.
+/// Called from the main event loop on poll timeout.
+pub fn tick_paste_buffer(app: &mut App) {
+    if let Some(deadline) = app.paste_deadline {
+        if std::time::Instant::now() >= deadline {
+            try_flush_paste(app);
+        }
+    }
+}
+
+/// Flush the paste buffer: if it's a valid image path, open import; otherwise discard.
+fn try_flush_paste(app: &mut App) {
+    let text = std::mem::take(&mut app.paste_buffer);
+    app.paste_deadline = None;
+    let path = text.trim().trim_matches('\'').trim_matches('"');
+    if path.is_empty() {
+        return;
+    }
+    let p = std::path::PathBuf::from(path);
+    if p.is_file() && is_image_file(path) {
+        app.import_path = Some(p);
+        app.import_options_cursor = 0;
+        app.mode = AppMode::ImportOptions;
     }
 }
 
@@ -255,8 +319,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('i') => {
-                // Import image dialog
-                open_import_dialog(app);
+                // Ctrl+I is Tab in terminals — import moved to plain 'I' key
                 return;
             }
             KeyCode::Char('p') => {
@@ -302,9 +365,13 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.active_tool = ToolKind::Fill;
             app.cancel_tool();
         }
-        KeyCode::Char('i') | KeyCode::Char('I') => {
+        KeyCode::Char('k') | KeyCode::Char('K') => {
             app.active_tool = ToolKind::Eyedropper;
             app.cancel_tool();
+        }
+        KeyCode::Char('i') | KeyCode::Char('I') => {
+            open_import_dialog(app);
+            return;
         }
 
         // Symmetry
@@ -1266,6 +1333,15 @@ fn handle_import_browse(app: &mut App, code: KeyCode) {
     }
 }
 
+/// Posterize presets: (label, value)
+const POSTERIZE_PRESETS: &[(& str, Option<usize>)] = &[
+    ("Off", None),
+    ("8 colors", Some(8)),
+    ("12 colors", Some(12)),
+    ("16 colors", Some(16)),
+    ("24 colors", Some(24)),
+];
+
 fn handle_import_options(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Up => {
@@ -1274,17 +1350,26 @@ fn handle_import_options(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Down => {
-            if app.import_options_cursor < 2 {
+            if app.import_options_cursor < 5 {
                 app.import_options_cursor += 1;
             }
         }
         KeyCode::Left | KeyCode::Right => {
             match app.import_options_cursor {
                 0 => app.import_fit = 1 - app.import_fit,
-                1 => app.import_color = 1 - app.import_color,
+                1 => app.import_color = (app.import_color + 1) % 3,
                 2 => app.import_charset = 1 - app.import_charset,
+                3 => app.import_normalize = !app.import_normalize,
+                4 => app.import_preserve_hue = !app.import_preserve_hue,
+                5 => app.import_posterize = (app.import_posterize + 1) % POSTERIZE_PRESETS.len(),
                 _ => {}
             }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            app.import_normalize = !app.import_normalize;
+        }
+        KeyCode::Char('h') | KeyCode::Char('H') => {
+            app.import_preserve_hue = !app.import_preserve_hue;
         }
         KeyCode::Enter => {
             do_import(app);
@@ -1315,10 +1400,10 @@ fn do_import(app: &mut App) {
         FitMode::CustomSize(app.canvas.width, app.canvas.height)
     };
 
-    let color_mode = if app.import_color == 0 {
-        ImportColorMode::Color256
-    } else {
-        ImportColorMode::Color16
+    let color_mode = match app.import_color {
+        0 => ImportColorMode::TrueColor,
+        1 => ImportColorMode::Color256,
+        _ => ImportColorMode::Color16,
     };
 
     let char_set = if app.import_charset == 0 {
@@ -1327,10 +1412,18 @@ fn do_import(app: &mut App) {
         ImportCharSet::HalfBlocks
     };
 
+    let posterize = POSTERIZE_PRESETS
+        .get(app.import_posterize)
+        .and_then(|(_, v)| *v);
+
     let opts = ImportOpts {
         fit_mode,
         color_mode,
         char_set,
+        color_boost: 1.0,
+        preserve_hue: app.import_preserve_hue,
+        normalize: app.import_normalize,
+        posterize,
     };
 
     let target_w = app.canvas.width;
@@ -1608,10 +1701,10 @@ mod tests {
         let mut app = App::new();
         assert_eq!(app.mode, AppMode::Normal);
 
-        // Simulate Ctrl+I
+        // Simulate 'I' key (import)
         handle_event(
             &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL)),
+            Event::Key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT)),
             &area(),
         );
 
@@ -1619,7 +1712,7 @@ mod tests {
         assert!(
             app.mode == AppMode::ImportBrowse
                 || app.status_message.is_some(),
-            "Ctrl+I should open import dialog or show status"
+            "'I' should open import dialog or show status"
         );
     }
 
@@ -1690,19 +1783,62 @@ mod tests {
         handle_import_options(&mut app, KeyCode::Down);
         assert_eq!(app.import_options_cursor, 2);
 
-        // Can't go past 2
         handle_import_options(&mut app, KeyCode::Down);
-        assert_eq!(app.import_options_cursor, 2);
+        assert_eq!(app.import_options_cursor, 3);
+
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 4);
+
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 5);
+
+        // Can't go past 5
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 5);
 
         handle_import_options(&mut app, KeyCode::Up);
-        assert_eq!(app.import_options_cursor, 1);
+        assert_eq!(app.import_options_cursor, 4);
 
-        // Toggle color mode
-        assert_eq!(app.import_color, 0);
+        // Navigate to color row and toggle through 3 modes
+        app.import_options_cursor = 1;
+        assert_eq!(app.import_color, 0); // TrueColor
         handle_import_options(&mut app, KeyCode::Right);
-        assert_eq!(app.import_color, 1);
+        assert_eq!(app.import_color, 1); // 256
+        handle_import_options(&mut app, KeyCode::Right);
+        assert_eq!(app.import_color, 2); // 16
+        handle_import_options(&mut app, KeyCode::Right);
+        assert_eq!(app.import_color, 0); // wraps to TrueColor
+    }
+
+    #[test]
+    fn test_import_options_toggle_normalize_hue() {
+        let mut app = App::new();
+        app.mode = AppMode::ImportOptions;
+
+        // Defaults
+        assert!(app.import_normalize);
+        assert!(app.import_preserve_hue);
+
+        // Toggle via N key
+        handle_import_options(&mut app, KeyCode::Char('N'));
+        assert!(!app.import_normalize);
+        handle_import_options(&mut app, KeyCode::Char('n'));
+        assert!(app.import_normalize);
+
+        // Toggle via H key
+        handle_import_options(&mut app, KeyCode::Char('H'));
+        assert!(!app.import_preserve_hue);
+        handle_import_options(&mut app, KeyCode::Char('h'));
+        assert!(app.import_preserve_hue);
+
+        // Toggle via arrow keys on rows 3 and 4
+        app.import_options_cursor = 3;
+        handle_import_options(&mut app, KeyCode::Right);
+        assert!(!app.import_normalize);
+
+        app.import_options_cursor = 4;
         handle_import_options(&mut app, KeyCode::Left);
-        assert_eq!(app.import_color, 0);
+        assert!(!app.import_preserve_hue);
     }
 
     #[test]
@@ -1725,7 +1861,7 @@ mod tests {
         app.canvas = Canvas::new_with_size(8, 8);
         app.import_path = Some(img_path.clone());
         app.import_charset = 0; // FullBlocks
-        app.import_color = 0;   // 256 color
+        app.import_color = 0;   // TrueColor
         app.import_fit = 0;     // FitToCanvas
 
         do_import(&mut app);

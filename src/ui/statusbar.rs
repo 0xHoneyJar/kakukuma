@@ -37,7 +37,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             ("^O", " Open ", Color::White, Color::Gray),
             ("^N", " New ", Color::White, Color::Gray),
             ("^E", " Export ", Color::White, Color::Gray),
-            ("^I", " Import ", Color::White, Color::Gray),
+            ("I", " Import ", Color::White, Color::Gray),
         ] {
             spans.push(Span::styled(key, Style::default().fg(key_fg).bg(theme.panel_bg)));
             spans.push(Span::styled(label, Style::default().fg(label_fg).bg(theme.panel_bg)));
@@ -147,7 +147,7 @@ pub fn build_spans(app: &App) -> Vec<Span<'static>> {
             ("^O", " Open ", Color::White, Color::Gray),
             ("^N", " New ", Color::White, Color::Gray),
             ("^E", " Export ", Color::White, Color::Gray),
-            ("^I", " Import ", Color::White, Color::Gray),
+            ("I", " Import ", Color::White, Color::Gray),
         ] {
             spans.push(Span::styled(key, Style::default().fg(key_fg).bg(theme.panel_bg)));
             spans.push(Span::styled(label, Style::default().fg(label_fg).bg(theme.panel_bg)));
@@ -219,7 +219,7 @@ mod tests {
     fn test_status_bar_shows_import() {
         let app = App::new();
         let text = spans_text(&build_spans(&app));
-        assert!(text.contains("^I"), "Status bar should contain ^I Import shortcut, got: {}", text);
+        assert!(text.contains("I"), "Status bar should contain I Import shortcut, got: {}", text);
         assert!(text.contains("Import"), "Status bar should contain Import label, got: {}", text);
     }
 

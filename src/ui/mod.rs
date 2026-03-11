@@ -1218,8 +1218,8 @@ fn render_import_browse(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_import_options(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
-    let height = 12u16;
-    let width = 44;
+    let height = 17u16;
+    let width = 48;
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let dialog_area = Rect::new(x, y, width, height);
@@ -1241,45 +1241,70 @@ fn render_import_options(f: &mut Frame, app: &App, area: Rect) {
 
     let cursor = app.import_options_cursor;
 
+    let row_style = |row: usize| -> Style {
+        if cursor == row {
+            Style::default().fg(Color::Black).bg(theme.highlight)
+        } else {
+            Style::default().fg(Color::White).bg(theme.panel_bg)
+        }
+    };
+
     // Row 0: Fit mode
     let fit_label = if app.import_fit == 0 { "Fit to Canvas" } else { "Custom Size" };
-    let fit_style = if cursor == 0 {
-        Style::default().fg(Color::Black).bg(theme.highlight)
-    } else {
-        Style::default().fg(Color::White).bg(theme.panel_bg)
-    };
     lines.push(Line::from(Span::styled(
-        format!("  Fit:     < {} >", fit_label),
-        fit_style,
+        format!("  Fit:       < {} >", fit_label),
+        row_style(0),
     )));
 
     // Row 1: Color mode
-    let color_label = if app.import_color == 0 { "256 Color" } else { "16 Color" };
-    let color_style = if cursor == 1 {
-        Style::default().fg(Color::Black).bg(theme.highlight)
-    } else {
-        Style::default().fg(Color::White).bg(theme.panel_bg)
+    let color_label = match app.import_color {
+        0 => "TrueColor",
+        1 => "256 Color",
+        _ => "16 Color",
     };
     lines.push(Line::from(Span::styled(
-        format!("  Colors:  < {} >", color_label),
-        color_style,
+        format!("  Colors:    < {} >", color_label),
+        row_style(1),
     )));
 
     // Row 2: Character set
     let charset_label = if app.import_charset == 0 { "Full Blocks" } else { "Half Blocks" };
-    let charset_style = if cursor == 2 {
-        Style::default().fg(Color::Black).bg(theme.highlight)
-    } else {
-        Style::default().fg(Color::White).bg(theme.panel_bg)
+    lines.push(Line::from(Span::styled(
+        format!("  Charset:   < {} >", charset_label),
+        row_style(2),
+    )));
+
+    // Row 3: Normalize toggle
+    let norm_label = if app.import_normalize { "ON" } else { "OFF" };
+    lines.push(Line::from(Span::styled(
+        format!("  [N]ormalize:    {}", norm_label),
+        row_style(3),
+    )));
+
+    // Row 4: Hue preserve toggle
+    let hue_label = if app.import_preserve_hue { "ON" } else { "OFF" };
+    lines.push(Line::from(Span::styled(
+        format!("  [H]ue preserve: {}", hue_label),
+        row_style(4),
+    )));
+
+    // Row 5: Posterize
+    let poster_label = match app.import_posterize {
+        0 => "Off",
+        1 => "8 colors",
+        2 => "12 colors",
+        3 => "16 colors",
+        4 => "24 colors",
+        _ => "Off",
     };
     lines.push(Line::from(Span::styled(
-        format!("  Charset: < {} >", charset_label),
-        charset_style,
+        format!("  Posterize: < {} >", poster_label),
+        row_style(5),
     )));
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " \u{2190}\u{2192} Change  Enter Import  Esc Back",
+        " \u{2190}\u{2192} Change  N/H Toggle  Enter Import  Esc Back",
         Style::default().fg(theme.dim).bg(theme.panel_bg),
     )));
 

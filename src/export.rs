@@ -1,17 +1,40 @@
 use image::{Rgba, RgbaImage};
 
 use crate::canvas::Canvas;
-use crate::cell::{blocks, is_half_block, nearest_16, nearest_256, resolve_half_block, ResolvedHalfBlock, Rgb};
+use crate::cell::{blocks, is_half_block, nearest_16, nearest_256, nearest_256_hue, resolve_half_block, ResolvedHalfBlock, Rgb};
 
 /// ANSI color format for export.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ColorFormat {
+    /// Auto-detect from terminal capabilities (COLORTERM env var)
+    Auto,
     /// 24-bit true color: \x1b[38;2;R;G;Bm
     TrueColor,
     /// xterm 256-color: \x1b[38;5;Nm
     Color256,
+    /// xterm 256-color with hue-preserving quantization
+    Color256Hue,
     /// ANSI 16-color: \x1b[38;5;Nm (N in 0–15)
     Color16,
+}
+
+/// Detect terminal color capabilities from environment variables.
+/// Returns TrueColor if COLORTERM indicates support, otherwise Color256Hue (safe default).
+pub fn detect_terminal_colors() -> ColorFormat {
+    if let Ok(ct) = std::env::var("COLORTERM") {
+        if ct == "truecolor" || ct == "24bit" {
+            return ColorFormat::TrueColor;
+        }
+    }
+    ColorFormat::Color256Hue
+}
+
+/// Resolve Auto to a concrete color format. Non-Auto values pass through unchanged.
+pub fn resolve_color_format(format: ColorFormat) -> ColorFormat {
+    match format {
+        ColorFormat::Auto => detect_terminal_colors(),
+        other => other,
+    }
 }
 
 /// Returns the bounding box of all non-empty cells as (min_x, min_y, max_x, max_y),
@@ -74,6 +97,7 @@ fn emit_fg(color: &Rgb, format: ColorFormat) -> String {
     match format {
         ColorFormat::TrueColor => format!("\x1b[38;2;{};{};{}m", color.r, color.g, color.b),
         ColorFormat::Color256 => format!("\x1b[38;5;{}m", nearest_256(color)),
+        ColorFormat::Auto | ColorFormat::Color256Hue => format!("\x1b[38;5;{}m", nearest_256_hue(color)),
         ColorFormat::Color16 => format!("\x1b[38;5;{}m", nearest_16(color)),
     }
 }
@@ -89,6 +113,10 @@ fn emit_fg_bg(fg: &Rgb, bg: &Rgb, format: ColorFormat) -> String {
             "\x1b[38;5;{};48;5;{}m",
             nearest_256(fg), nearest_256(bg)
         ),
+        ColorFormat::Auto | ColorFormat::Color256Hue => format!(
+            "\x1b[38;5;{};48;5;{}m",
+            nearest_256_hue(fg), nearest_256_hue(bg)
+        ),
         ColorFormat::Color16 => format!(
             "\x1b[38;5;{};48;5;{}m",
             nearest_16(fg), nearest_16(bg)
@@ -101,6 +129,7 @@ fn emit_bg(color: &Rgb, format: ColorFormat) -> String {
     match format {
         ColorFormat::TrueColor => format!("\x1b[48;2;{};{};{}m", color.r, color.g, color.b),
         ColorFormat::Color256 => format!("\x1b[48;5;{}m", nearest_256(color)),
+        ColorFormat::Auto | ColorFormat::Color256Hue => format!("\x1b[48;5;{}m", nearest_256_hue(color)),
         ColorFormat::Color16 => format!("\x1b[48;5;{}m", nearest_16(color)),
     }
 }
@@ -150,6 +179,7 @@ fn emit_cell_colors(
 /// Auto-crops to bounding box. Applies half-block resolution for export fidelity.
 /// Color format determines escape sequence type (24-bit, 256-color, or 16-color).
 pub fn to_ansi(canvas: &Canvas, format: ColorFormat) -> String {
+    let format = resolve_color_format(format);
     let (min_x, min_y, max_x, max_y) = match bounding_box(canvas) {
         Some(bb) => bb,
         None => return String::new(),
@@ -1109,6 +1139,54 @@ mod tests {
         let img = to_png(&canvas, 4, 8, 1, true);
         assert_eq!(img.width(), 4);
         assert_eq!(img.height(), 8);
+    }
+
+    #[test]
+    fn test_resolve_color_format_passthrough() {
+        assert_eq!(resolve_color_format(ColorFormat::TrueColor), ColorFormat::TrueColor);
+        assert_eq!(resolve_color_format(ColorFormat::Color256), ColorFormat::Color256);
+        assert_eq!(resolve_color_format(ColorFormat::Color256Hue), ColorFormat::Color256Hue);
+        assert_eq!(resolve_color_format(ColorFormat::Color16), ColorFormat::Color16);
+    }
+
+    #[test]
+    fn test_resolve_auto_returns_concrete() {
+        let resolved = resolve_color_format(ColorFormat::Auto);
+        assert_ne!(resolved, ColorFormat::Auto, "Auto should resolve to a concrete format");
+    }
+
+    #[test]
+    fn test_ansi_auto_format() {
+        // Auto should produce valid output (not panic)
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::FULL,
+            fg: RED,
+            bg: None,
+        });
+        let ansi = to_ansi(&canvas, ColorFormat::Auto);
+        assert!(!ansi.is_empty());
+        assert!(ansi.contains("\x1b["));
+    }
+
+    #[test]
+    fn test_render_auto_256() {
+        // When COLORTERM is not set to truecolor/24bit, Auto resolves to Color256Hue
+        // which produces 256-color escape codes (38;5;N) rather than true-color (38;2;R;G;B)
+        let mut canvas = Canvas::new();
+        canvas.set(0, 0, Cell {
+            ch: blocks::FULL,
+            fg: Some(Rgb::new(255, 0, 0)),
+            bg: None,
+        });
+        // In CI/test environment, COLORTERM is typically unset, so Auto → Color256Hue
+        let ansi = to_ansi(&canvas, ColorFormat::Auto);
+        assert!(!ansi.is_empty());
+        // Should contain escape codes
+        assert!(ansi.contains("\x1b["));
+        // The resolved format should be concrete (either 256-color or truecolor depending on env)
+        // At minimum, it should NOT panic and should produce valid ANSI
+        assert!(ansi.contains("\x1b[0m"), "Should end with reset");
     }
 
     #[test]

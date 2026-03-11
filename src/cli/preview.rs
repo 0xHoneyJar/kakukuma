@@ -120,8 +120,10 @@ pub fn export_to_file(
                 PreviewFormat::Png => unreachable!(),
             };
             let cf_str = match color_format {
+                CliColorFormat::Auto => "auto",
                 CliColorFormat::Truecolor => "truecolor",
                 CliColorFormat::Color256 => "256",
+                CliColorFormat::Color256Hue => "256-hue",
                 CliColorFormat::Color16 => "16",
             };
 
