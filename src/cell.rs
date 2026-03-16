@@ -57,6 +57,59 @@ pub mod blocks {
 
     /// Category sizes for the block picker (Primary=5, Shades=3, Vert=6, Horiz=6).
     pub const CATEGORY_SIZES: [usize; 4] = [5, 3, 6, 6];
+
+    /// Metadata for a single block character.
+    pub struct CharInfo {
+        pub ch: char,
+        pub name: &'static str,
+        pub alt: &'static str,
+        pub category: &'static str,
+        pub codepoint: &'static str,
+    }
+
+    /// Complete metadata for all 20 block characters.
+    pub const CHAR_INFO: [CharInfo; 20] = [
+        CharInfo { ch: FULL,         name: "full",         alt: "block",  category: "primary",         codepoint: "U+2588" },
+        CharInfo { ch: UPPER_HALF,   name: "upper-half",   alt: "top",    category: "primary",         codepoint: "U+2580" },
+        CharInfo { ch: LOWER_HALF,   name: "lower-half",   alt: "bottom", category: "primary",         codepoint: "U+2584" },
+        CharInfo { ch: LEFT_HALF,    name: "left-half",    alt: "left",   category: "primary",         codepoint: "U+258C" },
+        CharInfo { ch: RIGHT_HALF,   name: "right-half",   alt: "right",  category: "primary",         codepoint: "U+2590" },
+        CharInfo { ch: SHADE_LIGHT,  name: "shade-light",  alt: "light",  category: "shade",           codepoint: "U+2591" },
+        CharInfo { ch: SHADE_MEDIUM, name: "shade-medium", alt: "medium", category: "shade",           codepoint: "U+2592" },
+        CharInfo { ch: SHADE_DARK,   name: "shade-dark",   alt: "dark",   category: "shade",           codepoint: "U+2593" },
+        CharInfo { ch: LOWER_1_8,    name: "lower-1-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2581" },
+        CharInfo { ch: LOWER_1_4,    name: "lower-1-4",    alt: "",       category: "vertical-fill",   codepoint: "U+2582" },
+        CharInfo { ch: LOWER_3_8,    name: "lower-3-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2583" },
+        CharInfo { ch: LOWER_5_8,    name: "lower-5-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2585" },
+        CharInfo { ch: LOWER_3_4,    name: "lower-3-4",    alt: "",       category: "vertical-fill",   codepoint: "U+2586" },
+        CharInfo { ch: LOWER_7_8,    name: "lower-7-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2587" },
+        CharInfo { ch: LEFT_7_8,     name: "left-7-8",     alt: "",       category: "horizontal-fill", codepoint: "U+2589" },
+        CharInfo { ch: LEFT_3_4,     name: "left-3-4",     alt: "",       category: "horizontal-fill", codepoint: "U+258A" },
+        CharInfo { ch: LEFT_5_8,     name: "left-5-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258B" },
+        CharInfo { ch: LEFT_3_8,     name: "left-3-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258D" },
+        CharInfo { ch: LEFT_1_4,     name: "left-1-4",     alt: "",       category: "horizontal-fill", codepoint: "U+258E" },
+        CharInfo { ch: LEFT_1_8,     name: "left-1-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258F" },
+    ];
+
+    /// Resolve a character alias to a char. Returns None if not found.
+    /// Single-char input returns the char directly (backward compat).
+    pub fn resolve_char_alias(input: &str) -> Option<char> {
+        if input.chars().count() == 1 {
+            return Some(input.chars().next().unwrap());
+        }
+        let lower = input.to_lowercase();
+        CHAR_INFO.iter().find(|info| {
+            info.name == lower || (!info.alt.is_empty() && info.alt == lower)
+        }).map(|info| info.ch)
+    }
+
+    /// Look up CharInfo by char. Returns None for non-block chars.
+    pub fn char_info(ch: char) -> Option<&'static CharInfo> {
+        CHAR_INFO.iter().find(|info| info.ch == ch)
+    }
+
+    /// All distinct category names in order.
+    pub const CATEGORIES: [&str; 4] = ["primary", "shade", "vertical-fill", "horizontal-fill"];
 }
 
 /// Classification helpers for rendering.
@@ -309,17 +362,81 @@ pub fn color256_to_rgb(idx: u8) -> Rgb {
     Rgb { r, g, b }
 }
 
-/// Find the nearest xterm-256 color index for an Rgb value (Euclidean distance).
-pub fn nearest_256(color: &Rgb) -> u8 {
+/// Find the nearest ANSI 16 color index for an Rgb value (Euclidean distance).
+pub fn nearest_16(color: &Rgb) -> u8 {
     let mut best_idx: u8 = 0;
     let mut best_dist = u32::MAX;
 
+    for (i, &(r, g, b)) in ANSI_16_RGB.iter().enumerate() {
+        let dr = color.r as i32 - r as i32;
+        let dg = color.g as i32 - g as i32;
+        let db = color.b as i32 - b as i32;
+        let dist = (dr * dr + dg * dg + db * db) as u32;
+        if dist < best_dist {
+            best_dist = dist;
+            best_idx = i as u8;
+        }
+    }
+
+    best_idx
+}
+
+/// Find the nearest xterm-256 color index for an Rgb value (Euclidean distance).
+pub fn nearest_256(color: &Rgb) -> u8 {
+    nearest_256_inner(color, false)
+}
+
+/// Find the nearest xterm-256 color index, preferring chromatic matches over grays
+/// when the source pixel has visible hue. Trades brightness accuracy for color accuracy.
+pub fn nearest_256_hue(color: &Rgb) -> u8 {
+    nearest_256_inner(color, true)
+}
+
+fn nearest_256_inner(color: &Rgb, preserve_hue: bool) -> u8 {
+    let mut best_idx: u8 = 0;
+    let mut best_dist = f32::MAX;
+
+    // Source chromaticity: how "colorful" is the pixel?
+    let src_max = color.r.max(color.g).max(color.b) as f32;
+    let src_min = color.r.min(color.g).min(color.b) as f32;
+    let src_sat = if src_max > 0.0 { (src_max - src_min) / src_max } else { 0.0 };
+
+    // Source luminance (perceptual)
+    let src_lum = 0.299 * color.r as f32 + 0.587 * color.g as f32 + 0.114 * color.b as f32;
+
     for i in 0u16..=255 {
         let c = color256_to_rgb(i as u8);
-        let dr = color.r as i32 - c.r as i32;
-        let dg = color.g as i32 - c.g as i32;
-        let db = color.b as i32 - c.b as i32;
-        let dist = (dr * dr + dg * dg + db * db) as u32;
+
+        // Perceptually weighted RGB distance ("redmean" approximation).
+        // Human eyes are most sensitive to green, then red, then blue.
+        let rmean = (color.r as f32 + c.r as f32) / 2.0;
+        let dr = color.r as f32 - c.r as f32;
+        let dg = color.g as f32 - c.g as f32;
+        let db = color.b as f32 - c.b as f32;
+        let wr = 2.0 + rmean / 256.0;
+        let wg = 4.0;
+        let wb = 2.0 + (255.0 - rmean) / 256.0;
+        let mut dist = wr * dr * dr + wg * dg * dg + wb * db * db;
+
+        if preserve_hue && src_sat > 0.12 {
+            let c_max = c.r.max(c.g).max(c.b) as f32;
+            let c_min = c.r.min(c.g).min(c.b) as f32;
+            let c_sat = if c_max > 0.0 { (c_max - c_min) / c_max } else { 0.0 };
+
+            if c_sat < 0.05 {
+                // Source has color but candidate is gray → heavy penalty
+                dist += 20000.0;
+            } else {
+                // Penalize luminance shifts — prevents dark snapping of mid-tones
+                let c_lum = 0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32;
+                let lum_diff = (src_lum - c_lum).abs();
+                // Extra penalty for darkening (asymmetric: getting darker is worse
+                // than getting brighter, because dark colors lose hue detail)
+                let dark_penalty = if c_lum < src_lum { 1.5 } else { 1.0 };
+                dist += lum_diff * lum_diff * 0.08 * dark_penalty;
+            }
+        }
+
         if dist < best_dist {
             best_dist = dist;
             best_idx = i as u8;
@@ -484,6 +601,39 @@ mod tests {
     #[test]
     fn test_nearest_256_black() {
         assert_eq!(nearest_256(&Rgb::BLACK), 0);
+    }
+
+    #[test]
+    fn test_nearest_256_hue_keeps_brown_chromatic() {
+        // Brown skin tone — should NOT quantize to gray
+        let brown = Rgb::new(180, 120, 70);
+        let idx = nearest_256_hue(&brown);
+        let result = color256_to_rgb(idx);
+        // The result should have visible hue (not gray)
+        let max_ch = result.r.max(result.g).max(result.b);
+        let min_ch = result.r.min(result.g).min(result.b);
+        let diff = max_ch - min_ch;
+        assert!(diff > 20, "Brown should stay chromatic, got {:?} (diff={})", result, diff);
+        // Red channel should be dominant (warm color)
+        assert!(result.r > result.b, "Brown should be warm: {:?}", result);
+    }
+
+    #[test]
+    fn test_nearest_256_hue_vs_plain_for_dark_warm() {
+        // Dark warm color in the dead zone — hue-preserving should differ from plain
+        let dark_warm = Rgb::new(100, 60, 30);
+        let plain_idx = nearest_256(&dark_warm);
+        let hue_idx = nearest_256_hue(&dark_warm);
+        let plain_rgb = color256_to_rgb(plain_idx);
+        let hue_rgb = color256_to_rgb(hue_idx);
+        // Hue-preserving result should have more color separation (less gray)
+        let hue_diff = hue_rgb.r.max(hue_rgb.g).max(hue_rgb.b) as i32
+            - hue_rgb.r.min(hue_rgb.g).min(hue_rgb.b) as i32;
+        let plain_diff = plain_rgb.r.max(plain_rgb.g).max(plain_rgb.b) as i32
+            - plain_rgb.r.min(plain_rgb.g).min(plain_rgb.b) as i32;
+        assert!(hue_diff >= plain_diff,
+            "Hue-preserving should be at least as chromatic: hue={:?}(diff={}) vs plain={:?}(diff={})",
+            hue_rgb, hue_diff, plain_rgb, plain_diff);
     }
 
     #[test]
@@ -796,5 +946,60 @@ mod tests {
     #[test]
     fn parse_hex_empty() {
         assert_eq!(parse_hex_color(""), None);
+    }
+
+    // --- resolve_char_alias tests ---
+
+    #[test]
+    fn test_resolve_alias_primary_name() {
+        assert_eq!(blocks::resolve_char_alias("full"), Some(blocks::FULL));
+        assert_eq!(blocks::resolve_char_alias("shade-light"), Some(blocks::SHADE_LIGHT));
+        assert_eq!(blocks::resolve_char_alias("lower-3-4"), Some(blocks::LOWER_3_4));
+    }
+
+    #[test]
+    fn test_resolve_alias_alt_name() {
+        assert_eq!(blocks::resolve_char_alias("block"), Some(blocks::FULL));
+        assert_eq!(blocks::resolve_char_alias("top"), Some(blocks::UPPER_HALF));
+        assert_eq!(blocks::resolve_char_alias("dark"), Some(blocks::SHADE_DARK));
+    }
+
+    #[test]
+    fn test_resolve_alias_single_char_passthrough() {
+        assert_eq!(blocks::resolve_char_alias("█"), Some('█'));
+        assert_eq!(blocks::resolve_char_alias("a"), Some('a'));
+    }
+
+    #[test]
+    fn test_resolve_alias_case_insensitive() {
+        assert_eq!(blocks::resolve_char_alias("FULL"), Some(blocks::FULL));
+        assert_eq!(blocks::resolve_char_alias("Shade-Light"), Some(blocks::SHADE_LIGHT));
+    }
+
+    #[test]
+    fn test_resolve_alias_unknown() {
+        assert_eq!(blocks::resolve_char_alias("nope"), None);
+        assert_eq!(blocks::resolve_char_alias("unknown"), None);
+    }
+
+    #[test]
+    fn test_char_info_known() {
+        let info = blocks::char_info(blocks::FULL).unwrap();
+        assert_eq!(info.name, "full");
+        assert_eq!(info.category, "primary");
+        assert_eq!(info.codepoint, "U+2588");
+    }
+
+    #[test]
+    fn test_char_info_unknown() {
+        assert!(blocks::char_info('a').is_none());
+        assert!(blocks::char_info(' ').is_none());
+    }
+
+    #[test]
+    fn test_char_info_covers_all_blocks() {
+        for &ch in &blocks::ALL {
+            assert!(blocks::char_info(ch).is_some(), "Missing CharInfo for {:?}", ch);
+        }
     }
 }

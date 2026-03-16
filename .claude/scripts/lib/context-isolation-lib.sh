@@ -13,11 +13,11 @@
 
 set -euo pipefail
 
-CTX_ISOLATION_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_CTX_ISO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source bootstrap for PROJECT_ROOT if available
-if [[ -f "$CTX_ISOLATION_LIB_DIR/../bootstrap.sh" ]]; then
-    source "$CTX_ISOLATION_LIB_DIR/../bootstrap.sh"
+if [[ -f "$_CTX_ISO_DIR/../bootstrap.sh" ]]; then
+    source "$_CTX_ISO_DIR/../bootstrap.sh"
 fi
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"

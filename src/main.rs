@@ -1,23 +1,25 @@
+// Re-export library modules so binary-internal modules can use crate::
+pub use kakukuma::canvas;
+pub use kakukuma::cell;
+pub use kakukuma::export;
+pub use kakukuma::history;
+pub use kakukuma::import;
+pub use kakukuma::oplog;
+pub use kakukuma::palette;
+pub use kakukuma::project;
+pub use kakukuma::symmetry;
+pub use kakukuma::theme;
+pub use kakukuma::tools;
+
 mod app;
-mod canvas;
-mod cell;
 mod cli;
-mod export;
-mod history;
-mod import;
 mod input;
-mod oplog;
-mod palette;
-mod project;
-mod symmetry;
-mod theme;
-mod tools;
 mod ui;
 
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -48,7 +50,7 @@ fn run_tui(file: Option<String>) -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -56,7 +58,7 @@ fn run_tui(file: Option<String>) -> io::Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste);
         original_hook(panic_info);
     }));
 
@@ -67,7 +69,8 @@ fn run_tui(file: Option<String>) -> io::Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
 
@@ -110,6 +113,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, file: Option<Strin
             let event = event::read()?;
             input::handle_event(&mut app, event, &canvas_area);
         }
+
+        // Flush paste buffer if deadline has passed (drag-and-drop path detection)
+        input::tick_paste_buffer(&mut app);
 
         // Tick status message timer
         app.tick_status();

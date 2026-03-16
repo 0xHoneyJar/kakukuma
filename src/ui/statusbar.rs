@@ -35,8 +35,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         for &(key, label, key_fg, label_fg) in &[
             ("^S", " Save ", Color::White, Color::Gray),
             ("^O", " Open ", Color::White, Color::Gray),
+            ("^N", " New ", Color::White, Color::Gray),
             ("^E", " Export ", Color::White, Color::Gray),
-            ("^I", " Import ", Color::White, Color::Gray),
+            ("I", " Import ", Color::White, Color::Gray),
         ] {
             spans.push(Span::styled(key, Style::default().fg(key_fg).bg(theme.panel_bg)));
             spans.push(Span::styled(label, Style::default().fg(label_fg).bg(theme.panel_bg)));
@@ -60,6 +61,13 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Gray).bg(theme.panel_bg),
         ));
 
+        // Spacebar mode indicator
+        let space_label = if app.canvas_cursor_active { "\u{2389}Draw " } else { "\u{2389}Cmd " };
+        spans.push(Span::styled(
+            space_label,
+            Style::default().fg(theme.dim).bg(theme.panel_bg),
+        ));
+
         spans.push(Span::styled("\u{2502} ", sep_style));
 
         // Canvas dimensions
@@ -78,9 +86,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         ));
         right_spans.push(Span::styled(" ", Style::default().bg(theme.panel_bg)));
 
-        // Zoom level
+        // Zoom level with [Z] hint
         right_spans.push(Span::styled(
-            format!("{}x ", app.zoom),
+            format!("[Z]{}x ", app.zoom),
             Style::default().fg(theme.dim).bg(theme.panel_bg),
         ));
 
@@ -111,6 +119,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Build status bar spans without rendering (for testing).
+#[cfg(test)]
 pub fn build_spans(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme();
     let mut spans = Vec::new();
@@ -136,8 +145,9 @@ pub fn build_spans(app: &App) -> Vec<Span<'static>> {
         for &(key, label, key_fg, label_fg) in &[
             ("^S", " Save ", Color::White, Color::Gray),
             ("^O", " Open ", Color::White, Color::Gray),
+            ("^N", " New ", Color::White, Color::Gray),
             ("^E", " Export ", Color::White, Color::Gray),
-            ("^I", " Import ", Color::White, Color::Gray),
+            ("I", " Import ", Color::White, Color::Gray),
         ] {
             spans.push(Span::styled(key, Style::default().fg(key_fg).bg(theme.panel_bg)));
             spans.push(Span::styled(label, Style::default().fg(label_fg).bg(theme.panel_bg)));
@@ -155,9 +165,21 @@ pub fn build_spans(app: &App) -> Vec<Span<'static>> {
             format!("{} ", app.active_tool.name()),
             Style::default().fg(Color::Gray).bg(theme.panel_bg),
         ));
+        // Spacebar mode indicator
+        let space_label = if app.canvas_cursor_active { "\u{2389}Draw " } else { "\u{2389}Cmd " };
+        spans.push(Span::styled(
+            space_label,
+            Style::default().fg(theme.dim).bg(theme.panel_bg),
+        ));
         spans.push(Span::styled("\u{2502} ", sep_style));
         spans.push(Span::styled(
             format!("{}\u{00d7}{}", app.canvas.width, app.canvas.height),
+            Style::default().fg(theme.dim).bg(theme.panel_bg),
+        ));
+
+        // Zoom level with [Z] hint
+        spans.push(Span::styled(
+            format!("[Z]{}x ", app.zoom),
             Style::default().fg(theme.dim).bg(theme.panel_bg),
         ));
 
@@ -197,7 +219,7 @@ mod tests {
     fn test_status_bar_shows_import() {
         let app = App::new();
         let text = spans_text(&build_spans(&app));
-        assert!(text.contains("^I"), "Status bar should contain ^I Import shortcut, got: {}", text);
+        assert!(text.contains("I"), "Status bar should contain I Import shortcut, got: {}", text);
         assert!(text.contains("Import"), "Status bar should contain Import label, got: {}", text);
     }
 
@@ -255,5 +277,38 @@ mod tests {
         app.set_status("info");
         let spans = build_spans(&app);
         assert_eq!(spans[0].style.fg, Some(highlight_color));
+    }
+
+    #[test]
+    fn test_status_bar_shows_new_canvas() {
+        let app = App::new();
+        let text = spans_text(&build_spans(&app));
+        assert!(text.contains("^N"), "Status bar should contain ^N shortcut, got: {}", text);
+        assert!(text.contains("New"), "Status bar should contain New label, got: {}", text);
+    }
+
+    #[test]
+    fn test_status_bar_shows_zoom_hint() {
+        let app = App::new();
+        let text = spans_text(&build_spans(&app));
+        assert!(text.contains("[Z]"), "Status bar should contain [Z] zoom hint, got: {}", text);
+        assert!(text.contains("[Z]1x"), "Status bar should show [Z]1x at default zoom, got: {}", text);
+    }
+
+    #[test]
+    fn test_status_bar_spacebar_cmd_mode() {
+        let app = App::new();
+        // Default: canvas_cursor_active is false → should show ⎵Cmd
+        assert!(!app.canvas_cursor_active);
+        let text = spans_text(&build_spans(&app));
+        assert!(text.contains("\u{2389}Cmd"), "Status bar should show ⎵Cmd when cursor not active, got: {}", text);
+    }
+
+    #[test]
+    fn test_status_bar_spacebar_draw_mode() {
+        let mut app = App::new();
+        app.canvas_cursor_active = true;
+        let text = spans_text(&build_spans(&app));
+        assert!(text.contains("\u{2389}Draw"), "Status bar should show ⎵Draw when cursor active, got: {}", text);
     }
 }

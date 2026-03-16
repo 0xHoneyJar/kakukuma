@@ -1,275 +1,289 @@
-# SDD: Block Character Usability & CLI Polish
+# SDD: Import Fidelity & Color Intelligence
 
-> **Cycle**: 020
-> **Created**: 2026-03-02
-> **Status**: Draft
-> **PRD Reference**: `grimoires/loa/prd.md` (cycle-020)
+> **Status**: Approved
+> **Created**: 2026-03-06
+> **Updated**: 2026-03-14 (expanded: clipboard import, perceptual quantization, UI improvements)
+> **PRD**: grimoires/loa/prd.md
+> **Cycle**: 022
 
 ---
 
 ## 1. Architecture Overview
 
-This cycle adds character discoverability features to the existing CLI and TUI systems, integrates unmerged cycle 19 work, and fixes compiler warnings.
+This cycle modifies existing modules with one new file (`src/lib.rs`). Changes span smart defaults, a new CLI command, terminal detection, clipboard integration, perceptual color quantization, and TUI import UX improvements.
 
-```
-src/cell.rs (blocks module)           ← Single source of truth for chars
-    ↓                                    Already has: ALL, CATEGORY_SIZES, constants
-    ↓ NEW: CHAR_INFO array with name/category metadata
-    ↓
-src/cli/mod.rs                        ← NEW: Chars command variant
-    ↓
-src/cli/chars.rs (NEW)                ← Chars handler: JSON and plain output
-    ↓
-src/cli/draw.rs                       ← MODIFIED: --ch accepts String, resolves via lookup
-    ↓
-src/ui/mod.rs                         ← MODIFIED: picker shows selected char info line
-```
+### Modified Files
 
-**Key principle**: All character metadata lives in `src/cell.rs`. CLI and TUI consume it. No duplication.
+| File | Changes |
+|------|---------|
+| `src/cli/mod.rs` | New `Render` command, default changes for `Import`/`Preview`/`Export`, char alias support |
+| `src/export.rs` | `detect_terminal_colors()`, `ColorFormat::Auto`, hue-preserving export path |
+| `src/import.rs` | Smart defaults, `import_image_data()` for clipboard, normalize/posterize pipeline, brightness lift, mosaic mode, full-blocks fix |
+| `src/input.rs` | Clipboard import (Ctrl+V), paste buffer, import browse filter, import options toggles, keymap fixes |
+| `src/ui/mod.rs` | Import browse filter UI, import options expansion, block picker info |
+| `src/cell.rs` | Perceptual `nearest_256_hue()`, `CharInfo` metadata, `resolve_char_alias()` |
+| `src/app.rs` | Clipboard/paste/filter state fields, command registry updates |
+| `src/main.rs` | Bracketed paste enable, paste buffer tick |
+| `src/ui/toolbar.rs` | Block panel 4-row redesign |
+| `src/ui/statusbar.rs` | Keymap hints, spacebar mode indicator |
+| `src/canvas.rs` | `is_empty()` method |
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `src/lib.rs` | Library crate re-exports (from cycle-017, formalized) |
 
 ---
 
-## 2. Component Design
+## 2. Design Decisions
 
-### 2.1 Character Metadata (src/cell.rs)
-
-Add a `CharInfo` struct and `CHAR_INFO` const array alongside existing `blocks` module:
+### 2.1 Terminal Color Detection
 
 ```rust
-pub struct CharInfo {
-    pub ch: char,
-    pub name: &'static str,       // Primary alias: "full", "upper-half", etc.
-    pub alt: &'static str,        // Alt alias: "block", "top", etc. Empty = none
-    pub category: &'static str,   // "primary", "shade", "vertical-fill", "horizontal-fill"
-    pub codepoint: &'static str,  // "U+2588"
-}
+// src/export.rs
 
-pub const CHAR_INFO: [CharInfo; 20] = [
-    CharInfo { ch: FULL,         name: "full",         alt: "block",  category: "primary",         codepoint: "U+2588" },
-    CharInfo { ch: UPPER_HALF,   name: "upper-half",   alt: "top",    category: "primary",         codepoint: "U+2580" },
-    CharInfo { ch: LOWER_HALF,   name: "lower-half",   alt: "bottom", category: "primary",         codepoint: "U+2584" },
-    CharInfo { ch: LEFT_HALF,    name: "left-half",    alt: "left",   category: "primary",         codepoint: "U+258C" },
-    CharInfo { ch: RIGHT_HALF,   name: "right-half",   alt: "right",  category: "primary",         codepoint: "U+2590" },
-    CharInfo { ch: SHADE_LIGHT,  name: "shade-light",  alt: "light",  category: "shade",           codepoint: "U+2591" },
-    CharInfo { ch: SHADE_MEDIUM, name: "shade-medium",  alt: "medium", category: "shade",           codepoint: "U+2592" },
-    CharInfo { ch: SHADE_DARK,   name: "shade-dark",   alt: "dark",   category: "shade",           codepoint: "U+2593" },
-    CharInfo { ch: LOWER_1_8,    name: "lower-1-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2581" },
-    CharInfo { ch: LOWER_1_4,    name: "lower-1-4",    alt: "",       category: "vertical-fill",   codepoint: "U+2582" },
-    CharInfo { ch: LOWER_3_8,    name: "lower-3-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2583" },
-    CharInfo { ch: LOWER_5_8,    name: "lower-5-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2585" },
-    CharInfo { ch: LOWER_3_4,    name: "lower-3-4",    alt: "",       category: "vertical-fill",   codepoint: "U+2586" },
-    CharInfo { ch: LOWER_7_8,    name: "lower-7-8",    alt: "",       category: "vertical-fill",   codepoint: "U+2587" },
-    CharInfo { ch: LEFT_7_8,     name: "left-7-8",     alt: "",       category: "horizontal-fill", codepoint: "U+2589" },
-    CharInfo { ch: LEFT_3_4,     name: "left-3-4",     alt: "",       category: "horizontal-fill", codepoint: "U+258A" },
-    CharInfo { ch: LEFT_5_8,     name: "left-5-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258B" },
-    CharInfo { ch: LEFT_3_8,     name: "left-3-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258D" },
-    CharInfo { ch: LEFT_1_4,     name: "left-1-4",     alt: "",       category: "horizontal-fill", codepoint: "U+258E" },
-    CharInfo { ch: LEFT_1_8,     name: "left-1-8",     alt: "",       category: "horizontal-fill", codepoint: "U+258F" },
-];
-```
-
-**Lookup function**:
-
-```rust
-/// Resolve a character alias to a char. Returns None if not found.
-/// Single-char input returns the char directly (backward compat).
-pub fn resolve_char_alias(input: &str) -> Option<char> {
-    if input.chars().count() == 1 {
-        return Some(input.chars().next().unwrap());
+/// Detect terminal color capabilities from environment.
+pub fn detect_terminal_colors() -> ColorFormat {
+    // 1. COLORTERM=truecolor or COLORTERM=24bit → TrueColor
+    if let Ok(ct) = std::env::var("COLORTERM") {
+        if ct == "truecolor" || ct == "24bit" {
+            return ColorFormat::TrueColor;
+        }
     }
-    let lower = input.to_lowercase();
-    CHAR_INFO.iter().find(|info| {
-        info.name == lower || (!info.alt.is_empty() && info.alt == lower)
-    }).map(|info| info.ch)
-}
-
-/// Look up CharInfo by char. Returns None for non-block chars.
-pub fn char_info(ch: char) -> Option<&'static CharInfo> {
-    CHAR_INFO.iter().find(|info| info.ch == ch)
+    // 2. Fallback → Color256Hue (safe on all modern terminals)
+    ColorFormat::Color256Hue
 }
 ```
 
-### 2.2 `kakukuma chars` Command (src/cli/chars.rs — NEW)
+**Rationale**: `Color256Hue` is the safe default — it uses standard `\e[38;5;Nm` escapes that work everywhere, while preserving hue better than plain `Color256`. Truecolor is only used when we're confident the terminal supports it.
 
-**Command definition** (added to `Command` enum in mod.rs):
+### 2.2 `ColorFormat::Auto` Variant
+
+Add `Auto` to the `ColorFormat` enum. When `Auto` is selected:
+- CLI commands call `detect_terminal_colors()` at render time
+- This is the new default for `preview`, `export`, and `render`
 
 ```rust
-/// List available block characters
-Chars {
-    /// Filter by category
+pub enum ColorFormat {
+    Auto,       // NEW — detect at render time
+    TrueColor,
+    Color256,
+    Color256Hue,
+    Color16,
+}
+```
+
+Corresponding `CliColorFormat`:
+```rust
+pub enum CliColorFormat {
+    Auto,          // NEW — default for preview/export/render
+    Truecolor,
+    Color256,
+    Color256Hue,
+    Color16,
+}
+```
+
+### 2.3 Smart Import Defaults
+
+Change `ImportOptions::default()`:
+
+```rust
+impl Default for ImportOptions {
+    fn default() -> Self {
+        ImportOptions {
+            fit_mode: FitMode::FitToCanvas,
+            color_mode: ImportColorMode::TrueColor,  // was Color256
+            char_set: ImportCharSet::HalfBlocks,
+            color_boost: 1.0,
+            preserve_hue: true,   // was false
+            normalize: true,      // was false
+        }
+    }
+}
+```
+
+CLI `Import` command changes:
+- `--quantize` default: `truecolor` (was `256`)
+- `--normalize` default: always on, add `--no-normalize` to disable
+- `--preserve-hue` default: always on, add `--no-preserve-hue` to disable
+
+### 2.4 `Render` Command
+
+```rust
+/// Convert an image directly to ANSI art on stdout
+Render {
+    /// Path to image file (PNG, JPEG, etc.)
+    image: String,
+    /// Output width in characters
+    #[arg(long, default_value_t = 48)]
+    width: usize,
+    /// Output height in cell rows
+    #[arg(long, default_value_t = 24)]
+    height: usize,
+    /// Color format (auto-detected by default)
+    #[arg(long, default_value = "auto")]
+    color_format: CliColorFormat,
+    /// Disable brightness normalization
     #[arg(long)]
-    category: Option<String>,
-    /// Human-readable table output instead of JSON
+    no_normalize: bool,
+    /// Disable hue preservation
     #[arg(long)]
-    plain: bool,
-},
+    no_preserve_hue: bool,
+    /// Color saturation boost
+    #[arg(long, default_value_t = 1.0)]
+    boost: f32,
+}
 ```
 
-**Handler** (`src/cli/chars.rs`):
+Implementation flow:
+1. Open image, create `ImportOptions` with smart defaults
+2. `import_image()` → get cells grid
+3. Build temporary `Canvas` from cells
+4. Resolve `ColorFormat::Auto` via `detect_terminal_colors()`
+5. `to_ansi(&canvas, resolved_format)` → print to stdout
+
+No intermediate file. No .kaku. Fastest path from image to terminal.
+
+### 2.5 TUI Import Dialog Enhancement
+
+Expand the import options dialog from 3 rows to 6:
+
+| Row | Field | Key | Values |
+|-----|-------|-----|--------|
+| 0 | Fit mode | Left/Right | FitToCanvas, Custom |
+| 1 | Color mode | Left/Right | TrueColor, 256, 16 |
+| 2 | Char set | Left/Right | Full, Half |
+| 3 | Normalize | N | ON/OFF |
+| 4 | Hue preserve | H | ON/OFF |
+| 5 | Posterize | Left/Right | Off, 8, 12, 16, 24 |
+
+Auto color boost: 1.2× for 256-color, 1.4× for 16-color (applied automatically, not exposed in UI).
+
+### 2.6 Clipboard Image Import
 
 ```rust
-pub fn run_chars(category: Option<&str>, plain: bool) -> io::Result<()> {
-    let chars: Vec<&CharInfo> = if let Some(cat) = category {
-        blocks::CHAR_INFO.iter().filter(|c| c.category == cat).collect()
-    } else {
-        blocks::CHAR_INFO.iter().collect()
-    };
-
-    if plain {
-        print_plain_table(&chars);
-    } else {
-        print_json(&chars);
+// src/input.rs
+fn clipboard_import(app: &mut App) {
+    // 1. Try osascript for file path (Finder Cmd+C)
+    if let Some(path) = clipboard_file_path() {
+        if path.is_file() && is_image_file(&path.to_string_lossy()) {
+            app.import_path = Some(path);
+            app.mode = AppMode::ImportOptions;
+            return;
+        }
     }
-    Ok(())
-}
-```
-
-**JSON output** follows existing pattern (see inspect, stats commands):
-```json
-{
-  "characters": [...],
-  "categories": ["primary", "shade", "vertical-fill", "horizontal-fill"],
-  "total": 20
-}
-```
-
-### 2.3 `--ch` Alias Resolution (src/cli/draw.rs)
-
-**Change**: `DrawOpts.ch` type from `Option<char>` to `Option<String>`.
-
-**Resolution** in each draw handler:
-
-```rust
-let ch = match &opts.ch {
-    Some(s) => resolve_char_alias(s).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput,
-            format!("Unknown character '{}'. Run 'kakukuma chars' for available characters.", s))
-    })?,
-    None => blocks::FULL,
-};
-```
-
-**Updated help text**:
-```rust
-/// Block character: raw char (█) or name (full, shade-light, etc.). See 'kakukuma chars'.
-#[arg(long)]
-pub ch: Option<String>,
-```
-
-### 2.4 TUI Block Picker Enhancement (src/ui/mod.rs)
-
-The picker already has category labels. Add a **selected char info line** at the bottom:
-
-**Current layout** (width=38, height=10):
-```
-┌─ Block Picker ─────────────────────┐
-│  Primary:    █ ▀ ▄ ▌ ▐            │
-│  Shades:     ░ ▒ ▓                │
-│  Vert Fill:  ▁ ▂ ▃ ▅ ▆ ▇          │
-│  Horiz Fill: ▉ ▊ ▋ ▍ ▎ ▏          │
-│                                    │
-│  ← → ↑ ↓  Enter  Esc             │
-└────────────────────────────────────┘
-```
-
-**After** (height +1 → 11):
-```
-┌─ Block Picker ─────────────────────┐
-│  Primary:    █ ▀ ▄ ▌ ▐            │
-│  Shades:     ░ ▒ ▓                │
-│  Vert Fill:  ▁ ▂ ▃ ▅ ▆ ▇          │
-│  Horiz Fill: ▉ ▊ ▋ ▍ ▎ ▏          │
-│                                    │
-│  █ full (U+2588)                   │  ← NEW: selected char info
-│  ← → ↑ ↓  Enter  Esc             │
-└────────────────────────────────────┘
-```
-
-**Implementation**: Look up `blocks::char_info(selected_char)` and render a line showing `{char} {name} ({codepoint})`.
-
-### 2.5 Cycle 19 Integration
-
-**Strategy**: Merge the `feature/cycle-019-cli-polish-image-export` branch into the new cycle branch.
-
-**Commits to include**:
-- `4093b666` — feat(sprint-1): CLI normalization, auto-format detection, and PNG export engine
-- `bd9465be` — feat(sprint-2): comprehensive PNG export test suite and sprint-1 review/audit artifacts
-- `4a10acc8` — chore(sprint-6): review and audit approval for PNG export test suite
-
-**Conflict risk**: Low — cycle 19 modifies `src/cli/mod.rs` and `src/export.rs`, and this cycle also modifies `src/cli/mod.rs`. Conflicts will be in the `Command` enum (add `Chars` variant) and `DrawOpts` (change `ch` type).
-
-**Resolution strategy**: Apply cycle 19 first, then layer cycle 20 changes on top.
-
-### 2.6 Compiler Warning Fixes
-
-1. **`Canvas::clear()` (src/canvas.rs:51)**: Add `#[allow(dead_code)]` — it's a useful API method for lib consumers even if not called internally.
-
-2. **`build_spans()` (src/ui/statusbar.rs:114)**: Investigate usage. If truly unused, remove it. If it was meant to replace something, integrate or remove.
-
----
-
-## 3. Data Model
-
-No persistent data changes. All character metadata is compile-time constants.
-
-### 3.1 JSON Schema: `kakukuma chars`
-
-```json
-{
-  "characters": [
-    {
-      "char": "string (single Unicode char)",
-      "name": "string (primary alias)",
-      "alt": "string (alt alias, may be empty)",
-      "category": "string (primary|shade|vertical-fill|horizontal-fill)",
-      "codepoint": "string (U+XXXX)"
+    // 2. Fall back to raw RGBA pixel data
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if let Ok(img) = clipboard.get_image() {
+            app.clipboard_image = Some((img.bytes.into(), img.width as u32, img.height as u32));
+            app.mode = AppMode::ImportOptions;
+        }
     }
-  ],
-  "categories": ["string"],
-  "total": "integer"
 }
+```
+
+macOS-specific: `osascript -e 'POSIX path of (the clipboard as «class furl»)'` reads file URLs from the pasteboard. Falls back to `arboard::get_image()` for screenshots.
+
+### 2.7 Import Browse Type-to-Filter
+
+State fields on `App`:
+- `import_filter: String` — current filter query
+- `import_all_entries: Vec<String>` — cached unfiltered directory listing
+
+Behavior:
+- Regular characters append to filter, re-filter displayed list
+- `/` or `~` enters path mode (direct path entry with Tab completion)
+- Backspace removes last char from filter
+- Esc clears filter (if filter active) or closes dialog
+
+### 2.8 Perceptual Color Quantization
+
+Replace Euclidean RGB distance in `nearest_256_inner()` with "redmean" approximation:
+
+```rust
+let rmean = (src.r as f32 + candidate.r as f32) / 2.0;
+let wr = 2.0 + rmean / 256.0;   // red weight varies with red level
+let wg = 4.0;                     // green dominates (most perceptual weight)
+let wb = 2.0 + (255.0 - rmean) / 256.0;  // blue inversely weighted
+let dist = wr * dr² + wg * dg² + wb * db²;
+```
+
+Additional terms for hue-preserving mode:
+- Gray penalty: 20000 (was 8000) when source has hue but candidate is gray
+- Luminance preservation: `lum_diff² * 0.08 * dark_penalty` where dark_penalty=1.5 for darkening
+
+Brightness lift in `boost_saturation()`: dark chromatic pixels (max channel < 150, saturation > 0.15) get scaled up to clear the dead zone, capped at 1.5× to prevent blowout.
+
+### 2.9 Full Blocks Fix
+
+`rasterize_full_blocks()` changed from:
+```rust
+Cell { ch: ' ', fg: None, bg: Some(rgb) }  // BROKEN: is_empty() returns true
+```
+to:
+```rust
+Cell { ch: '\u{2588}', fg: Some(rgb), bg: None }  // FIXED: full block char with fg
 ```
 
 ---
 
-## 4. Security Considerations
+## 3. Data Flow
 
-- **No new attack surface**: `chars` command is read-only, outputs static data
-- **Alias resolution**: `resolve_char_alias()` does string comparison only, no eval/exec
-- **CLI input**: `--ch` value is validated against known aliases or accepted as single char — no injection risk
-- **Color rules**: All terminal rendering still uses `Color::Indexed()` — no `Color::Rgb()` introduced
+### `render` command (new)
+```
+image.png → import_image() → Vec<Vec<Cell>> → Canvas → to_ansi(Auto) → stdout
+                                                           ↓
+                                                  detect_terminal_colors()
+```
 
----
+### `import` command (modified defaults)
+```
+image.png → import_image(truecolor, normalize, preserve_hue) → Canvas → .kaku file
+```
 
-## 5. Test Strategy
-
-### 5.1 New Tests
-
-| Location | Tests | Description |
-|----------|-------|-------------|
-| `src/cell.rs` | +5 | `resolve_char_alias` for primary name, alt name, single char, unknown, case-insensitive |
-| `src/cli/mod.rs` | +4 | `chars` command parsing, `--category` filter, `--plain` flag, `--ch` with alias |
-| `src/cli/chars.rs` | +3 | JSON output structure, plain output format, category filter |
-| `src/ui/mod.rs` | +1 | Picker info line renders correct name for selected char |
-
-### 5.2 Existing Tests
-
-All 375 tests from cycle 19 must pass after merge + modifications.
-
-**Target**: 375 existing + 13 new = 388+ tests
+### `export`/`preview` commands (modified defaults)
+```
+.kaku file → Canvas → to_ansi(Auto) → detect_terminal_colors() → stdout/file
+```
 
 ---
 
-## 6. File Change Summary
+## 4. Testing Strategy
 
-| File | Change | Scope |
-|------|--------|-------|
-| `src/cell.rs` | Add `CharInfo`, `CHAR_INFO`, `resolve_char_alias()`, `char_info()` | ~50 lines |
-| `src/cli/mod.rs` | Add `Chars` variant to `Command`, wire dispatch | ~10 lines |
-| `src/cli/chars.rs` | **NEW**: chars command handler | ~80 lines |
-| `src/cli/draw.rs` | Change `ch: Option<char>` → `Option<String>`, add alias resolution | ~15 lines |
-| `src/ui/mod.rs` | Add selected char info line to picker, increase height by 1 | ~10 lines |
-| `src/canvas.rs` | Add `#[allow(dead_code)]` to `clear()` | 1 line |
-| `src/ui/statusbar.rs` | Remove or annotate `build_spans()` | ~1-5 lines |
+### Unit Tests
 
-**Estimated total new/modified lines**: ~170 (excluding cycle 19 merge)
+| Test | Location | What |
+|------|----------|------|
+| `test_detect_terminal_truecolor` | `src/export.rs` | Set COLORTERM=truecolor, verify TrueColor returned |
+| `test_detect_terminal_256` | `src/export.rs` | Unset COLORTERM, verify Color256Hue fallback |
+| `test_detect_terminal_fallback` | `src/export.rs` | No env vars, verify Color256Hue fallback |
+| `test_auto_resolves` | `src/export.rs` | Verify Auto variant resolves to concrete format |
+| `test_default_import_options` | `src/import.rs` | Verify new defaults: truecolor, normalize=true, preserve_hue=true |
+| `test_render_produces_ansi` | `src/cli/mod.rs` | Render test image, verify output contains ANSI escapes |
+| `test_no_normalize_flag` | `src/import.rs` | Verify --no-normalize disables normalization |
+| `test_no_preserve_hue_flag` | `src/import.rs` | Verify --no-preserve-hue disables hue preservation |
+
+### Integration Tests
+
+- Import a test PNG with new defaults → export → verify output contains `\e[38;5;` escapes (not truecolor)
+- `render` command with test image → verify non-empty stdout with ANSI codes
+
+---
+
+## 5. Migration & Compatibility
+
+### Breaking Changes
+
+| Change | Impact | Mitigation |
+|--------|--------|------------|
+| Import default `--quantize` now `truecolor` | Existing scripts using bare `kakukuma import` will store full RGB instead of pre-quantized 256 | .kaku files are always re-exported; stored color mode doesn't affect display |
+| Import default normalize/preserve-hue now on | Results will look different (better for photos, potentially unwanted for pixel art) | `--no-normalize --no-preserve-hue` flags |
+| Preview/export default color format now `auto` | Output may switch from truecolor to 256-color depending on terminal | Explicit `--color-format truecolor` override available |
+
+### Backward Compatibility
+
+- All existing CLI flags remain functional
+- .kaku file format unchanged (version 5)
+- TUI behavior unchanged except import dialog default toggles

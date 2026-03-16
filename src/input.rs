@@ -171,14 +171,90 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
             }
             return;
         }
+        AppMode::CommandPalette => {
+            if let Event::Key(key) = event {
+                handle_command_palette(app, key);
+            }
+            return;
+        }
+        AppMode::GotoInput => {
+            if let Event::Key(key) = event {
+                handle_goto_input(app, key);
+            }
+            return;
+        }
         _ => {}
     }
 
     match event {
-        Event::Key(key) => handle_key(app, key),
+        Event::Key(key) => {
+            // Paste buffer: accumulate rapid characters that look like a file path
+            if app.paste_deadline.is_some() {
+                if let KeyCode::Char(c) = key.code {
+                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.paste_buffer.push(c);
+                        app.paste_deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(50));
+                        return;
+                    }
+                }
+                // Non-character key while buffering — flush and process
+                try_flush_paste(app);
+            }
+            // Start paste detection: '/' or '~' in Normal mode begins path accumulation
+            if app.mode == AppMode::Normal
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                if let KeyCode::Char(c @ ('/' | '~')) = key.code {
+                    app.paste_buffer.clear();
+                    app.paste_buffer.push(c);
+                    app.paste_deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(50));
+                    return;
+                }
+            }
+            handle_key(app, key);
+        }
         Event::Mouse(mouse) => handle_mouse(app, mouse, canvas_area),
+        Event::Paste(text) => handle_paste(app, text),
         Event::Resize(_, _) => {} // Layout handles this automatically
         _ => {}
+    }
+}
+
+/// Handle bracketed paste — if it looks like an image path, open import options directly.
+fn handle_paste(app: &mut App, text: String) {
+    let path = text.trim().to_string();
+    let path = path.trim_matches('\'').trim_matches('"').to_string();
+    let p = std::path::PathBuf::from(&path);
+    if p.is_file() && is_image_file(&path) {
+        app.import_path = Some(p);
+        app.import_options_cursor = 0;
+        app.mode = AppMode::ImportOptions;
+    }
+}
+
+/// Check if the paste buffer deadline has expired and flush it.
+/// Called from the main event loop on poll timeout.
+pub fn tick_paste_buffer(app: &mut App) {
+    if let Some(deadline) = app.paste_deadline {
+        if std::time::Instant::now() >= deadline {
+            try_flush_paste(app);
+        }
+    }
+}
+
+/// Flush the paste buffer: if it's a valid image path, open import; otherwise discard.
+fn try_flush_paste(app: &mut App) {
+    let text = std::mem::take(&mut app.paste_buffer);
+    app.paste_deadline = None;
+    let path = text.trim().trim_matches('\'').trim_matches('"');
+    if path.is_empty() {
+        return;
+    }
+    let p = std::path::PathBuf::from(path);
+    if p.is_file() && is_image_file(path) {
+        app.import_path = Some(p);
+        app.import_options_cursor = 0;
+        app.mode = AppMode::ImportOptions;
     }
 }
 
@@ -242,9 +318,21 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.mode = AppMode::ExportDialog;
                 return;
             }
+            KeyCode::Char('v') => {
+                // Paste image from clipboard
+                clipboard_import(app);
+                return;
+            }
             KeyCode::Char('i') => {
-                // Import image dialog
-                open_import_dialog(app);
+                // Ctrl+I is Tab in terminals — import moved to plain 'I' key
+                return;
+            }
+            KeyCode::Char('p') => {
+                // Command palette (unconditional — always works regardless of cursor state)
+                app.palette_query.clear();
+                app.palette_filtered = (0..crate::app::COMMANDS.len()).collect();
+                app.palette_selected_cmd = 0;
+                app.mode = AppMode::CommandPalette;
                 return;
             }
             KeyCode::Char('c') => {
@@ -282,9 +370,13 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.active_tool = ToolKind::Fill;
             app.cancel_tool();
         }
-        KeyCode::Char('i') | KeyCode::Char('I') => {
+        KeyCode::Char('k') | KeyCode::Char('K') => {
             app.active_tool = ToolKind::Eyedropper;
             app.cancel_tool();
+        }
+        KeyCode::Char('i') | KeyCode::Char('I') => {
+            open_import_dialog(app);
+            return;
         }
 
         // Symmetry
@@ -403,6 +495,12 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 if matches!(app.active_tool, ToolKind::Pencil | ToolKind::Eraser) {
                     app.end_stroke();
                 }
+            } else {
+                // Open command palette
+                app.palette_query.clear();
+                app.palette_filtered = (0..crate::app::COMMANDS.len()).collect();
+                app.palette_selected_cmd = 0;
+                app.mode = AppMode::CommandPalette;
             }
         }
 
@@ -489,6 +587,85 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             }
         }
 
+        _ => {}
+    }
+}
+
+fn handle_command_palette(app: &mut App, key: KeyEvent) {
+    use crate::app::{fuzzy_match, COMMANDS};
+
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Enter => {
+            if let Some(&idx) = app.palette_filtered.get(app.palette_selected_cmd) {
+                let action = COMMANDS[idx].action;
+                app.mode = AppMode::Normal;
+                action(app);
+            } else {
+                app.mode = AppMode::Normal;
+            }
+        }
+        KeyCode::Up => {
+            if app.palette_selected_cmd > 0 {
+                app.palette_selected_cmd -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if !app.palette_filtered.is_empty()
+                && app.palette_selected_cmd + 1 < app.palette_filtered.len()
+            {
+                app.palette_selected_cmd += 1;
+            }
+        }
+        KeyCode::Backspace => {
+            app.palette_query.pop();
+            // Re-filter
+            app.palette_filtered = (0..COMMANDS.len())
+                .filter(|&i| fuzzy_match(&app.palette_query, COMMANDS[i].name))
+                .collect();
+            if app.palette_selected_cmd >= app.palette_filtered.len() {
+                app.palette_selected_cmd = app.palette_filtered.len().saturating_sub(1);
+            }
+        }
+        KeyCode::Char(c) => {
+            app.palette_query.push(c);
+            // Re-filter
+            app.palette_filtered = (0..COMMANDS.len())
+                .filter(|&i| fuzzy_match(&app.palette_query, COMMANDS[i].name))
+                .collect();
+            app.palette_selected_cmd = 0;
+        }
+        _ => {}
+    }
+}
+
+fn handle_goto_input(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char(c) if c.is_ascii_digit() || c == ',' => {
+            app.goto_input.push(c);
+        }
+        KeyCode::Backspace => { app.goto_input.pop(); }
+        KeyCode::Esc => { app.mode = AppMode::Normal; }
+        KeyCode::Enter => {
+            let parts: Vec<&str> = app.goto_input.split(',').collect();
+            if parts.len() == 2 {
+                if let (Ok(x), Ok(y)) = (parts[0].trim().parse::<usize>(), parts[1].trim().parse::<usize>()) {
+                    let cx = x.min(app.canvas.width.saturating_sub(1));
+                    let cy = y.min(app.canvas.height.saturating_sub(1));
+                    app.canvas_cursor = (cx, cy);
+                    app.canvas_cursor_active = true;
+                    app.ensure_cursor_in_viewport(cx, cy, app.viewport_w, app.viewport_h);
+                    app.set_status(&format!("Jumped to ({},{})", cx, cy));
+                } else {
+                    app.set_status_with_level("Invalid coordinate", MessageLevel::Warning);
+                }
+            } else {
+                app.set_status_with_level("Use format: x,y", MessageLevel::Warning);
+            }
+            app.mode = AppMode::Normal;
+        }
         _ => {}
     }
 }
@@ -1106,11 +1283,67 @@ fn list_import_entries(dir: &std::path::Path) -> Vec<String> {
     entries
 }
 
+/// Read clipboard image and open import options.
+/// First tries to read a copied file path (Finder Cmd+C), then falls back to raw image data (screenshots).
+fn clipboard_import(app: &mut App) {
+    // Try to get a file path from the clipboard (macOS: Finder copies file URLs)
+    if let Some(path) = clipboard_file_path() {
+        if path.is_file() && is_image_file(&path.to_string_lossy()) {
+            app.import_path = Some(path);
+            app.clipboard_image = None;
+            app.import_options_cursor = 0;
+            app.mode = AppMode::ImportOptions;
+            return;
+        }
+    }
+
+    // Fall back to raw image data (screenshots, image editors, etc.)
+    match arboard::Clipboard::new() {
+        Ok(mut clipboard) => match clipboard.get_image() {
+            Ok(img_data) => {
+                if img_data.width == 0 || img_data.height == 0 {
+                    app.set_status_with_level("Clipboard image is empty", MessageLevel::Warning);
+                    return;
+                }
+                app.clipboard_image = Some((img_data.bytes.into_owned(), img_data.width as u32, img_data.height as u32));
+                app.import_path = None;
+                app.import_options_cursor = 0;
+                app.mode = AppMode::ImportOptions;
+            }
+            Err(_) => {
+                app.set_status_with_level("No image on clipboard — copy an image first (Cmd+C in Finder)", MessageLevel::Warning);
+            }
+        },
+        Err(e) => {
+            app.set_status_with_level(&format!("Clipboard unavailable: {}", e), MessageLevel::Error);
+        }
+    }
+}
+
+/// Try to read a file path from the macOS clipboard (Finder puts file URLs on the pasteboard).
+fn clipboard_file_path() -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("osascript")
+        .args(["-e", "POSIX path of (the clipboard as «class furl»)"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path_str = String::from_utf8(output.stdout).ok()?;
+    let path_str = path_str.trim();
+    if path_str.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(path_str))
+}
+
 /// Open the import file browser dialog.
 fn open_import_dialog(app: &mut App) {
     let entries = list_import_entries(&app.import_dir);
+    app.import_all_entries = entries.clone();
     app.file_dialog_files = entries;
     app.file_dialog_selected = 0;
+    app.import_filter.clear();
     if app.file_dialog_files.is_empty() {
         app.set_status_with_level("No image files found", MessageLevel::Warning);
     } else {
@@ -1118,35 +1351,84 @@ fn open_import_dialog(app: &mut App) {
     }
 }
 
+/// Re-filter the import browse list based on the current filter query.
+fn refilter_import_browse(app: &mut App) {
+    if app.import_filter.is_empty() {
+        app.file_dialog_files = app.import_all_entries.clone();
+    } else {
+        let query = app.import_filter.to_lowercase();
+        app.file_dialog_files = app.import_all_entries
+            .iter()
+            .filter(|e| *e == ".." || e.to_lowercase().contains(&query))
+            .cloned()
+            .collect();
+    }
+    // Keep selection in bounds
+    if app.file_dialog_selected >= app.file_dialog_files.len() {
+        app.file_dialog_selected = app.file_dialog_files.len().saturating_sub(1);
+    }
+}
+
+fn refresh_import_dir(app: &mut App) {
+    let entries = list_import_entries(&app.import_dir);
+    app.import_all_entries = entries.clone();
+    app.import_filter.clear();
+    app.file_dialog_files = entries;
+    app.file_dialog_selected = 0;
+}
+
 fn handle_import_browse(app: &mut App, code: KeyCode) {
+    let is_path_mode = app.import_filter.starts_with('/') || app.import_filter.starts_with('~');
+
     match code {
-        KeyCode::Up => {
+        KeyCode::Up if !is_path_mode => {
             if app.file_dialog_selected > 0 {
                 app.file_dialog_selected -= 1;
             }
         }
-        KeyCode::Down => {
+        KeyCode::Down if !is_path_mode => {
             if app.file_dialog_selected + 1 < app.file_dialog_files.len() {
                 app.file_dialog_selected += 1;
             }
         }
+        KeyCode::Tab if is_path_mode => {
+            // Tab-complete: find common prefix among matching files
+            tab_complete_import_path(app);
+        }
         KeyCode::Enter => {
-            if let Some(entry) = app.file_dialog_files.get(app.file_dialog_selected).cloned() {
+            if is_path_mode {
+                // Path mode: resolve typed path
+                let raw = app.import_filter.clone();
+                let expanded = if raw.starts_with('~') {
+                    if let Some(home) = dirs::home_dir() {
+                        home.join(&raw[1..].trim_start_matches('/'))
+                    } else {
+                        std::path::PathBuf::from(&raw)
+                    }
+                } else {
+                    std::path::PathBuf::from(&raw)
+                };
+                if expanded.is_file() && is_image_file(&expanded.to_string_lossy()) {
+                    app.import_path = Some(expanded);
+                    app.import_options_cursor = 0;
+                    app.mode = AppMode::ImportOptions;
+                } else if expanded.is_dir() {
+                    app.import_dir = expanded;
+                    refresh_import_dir(app);
+                } else {
+                    app.set_status_with_level("Path not found or not an image", MessageLevel::Warning);
+                }
+            } else if let Some(entry) = app.file_dialog_files.get(app.file_dialog_selected).cloned() {
                 if entry == ".." {
-                    // Navigate to parent directory
                     if let Some(parent) = app.import_dir.parent() {
                         app.import_dir = parent.to_path_buf();
                     }
-                    app.file_dialog_files = list_import_entries(&app.import_dir);
-                    app.file_dialog_selected = 0;
+                    refresh_import_dir(app);
                 } else if entry.ends_with('/') {
-                    // Navigate into directory
                     let dir_name = &entry[..entry.len() - 1];
                     app.import_dir = app.import_dir.join(dir_name);
-                    app.file_dialog_files = list_import_entries(&app.import_dir);
-                    app.file_dialog_selected = 0;
+                    refresh_import_dir(app);
                 } else {
-                    // Image file selected — store path and go to options
                     let full_path = app.import_dir.join(&entry);
                     app.import_path = Some(full_path);
                     app.import_options_cursor = 0;
@@ -1154,12 +1436,102 @@ fn handle_import_browse(app: &mut App, code: KeyCode) {
                 }
             }
         }
+        KeyCode::Backspace => {
+            if !app.import_filter.is_empty() {
+                app.import_filter.pop();
+                if !is_path_mode {
+                    refilter_import_browse(app);
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            app.import_filter.push(c);
+            if !(app.import_filter.starts_with('/') || app.import_filter.starts_with('~')) {
+                refilter_import_browse(app);
+            }
+        }
         KeyCode::Esc => {
-            app.mode = AppMode::Normal;
+            if !app.import_filter.is_empty() {
+                app.import_filter.clear();
+                refilter_import_browse(app);
+            } else {
+                app.mode = AppMode::Normal;
+            }
         }
         _ => {}
     }
 }
+
+/// Tab-complete a path in import browse path mode.
+fn tab_complete_import_path(app: &mut App) {
+    let raw = &app.import_filter;
+    let expanded = if raw.starts_with('~') {
+        if let Some(home) = dirs::home_dir() {
+            let rest = raw[1..].trim_start_matches('/');
+            home.join(rest).to_string_lossy().to_string()
+        } else {
+            return;
+        }
+    } else {
+        raw.clone()
+    };
+
+    let path = std::path::Path::new(&expanded);
+    let (dir, prefix) = if path.is_dir() {
+        (path.to_path_buf(), String::new())
+    } else if let Some(parent) = path.parent() {
+        let prefix = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        (parent.to_path_buf(), prefix)
+    } else {
+        return;
+    };
+
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut matches: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.to_lowercase().starts_with(&prefix.to_lowercase())
+            })
+            .map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let full = dir.join(&name);
+                if full.is_dir() {
+                    format!("{}/", full.to_string_lossy())
+                } else {
+                    full.to_string_lossy().to_string()
+                }
+            })
+            .collect();
+        matches.sort();
+
+        if matches.len() == 1 {
+            app.import_filter = matches.remove(0);
+        } else if matches.len() > 1 {
+            // Find longest common prefix
+            if let Some(first) = matches.first() {
+                let mut common = first.clone();
+                for m in &matches[1..] {
+                    while !m.starts_with(&common) && !common.is_empty() {
+                        common.pop();
+                    }
+                }
+                if common.len() > app.import_filter.len() {
+                    app.import_filter = common;
+                }
+            }
+        }
+    }
+}
+
+/// Posterize presets: (label, value)
+const POSTERIZE_PRESETS: &[(& str, Option<usize>)] = &[
+    ("Off", None),
+    ("8 colors", Some(8)),
+    ("12 colors", Some(12)),
+    ("16 colors", Some(16)),
+    ("24 colors", Some(24)),
+];
 
 fn handle_import_options(app: &mut App, code: KeyCode) {
     match code {
@@ -1169,24 +1541,39 @@ fn handle_import_options(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Down => {
-            if app.import_options_cursor < 2 {
+            if app.import_options_cursor < 5 {
                 app.import_options_cursor += 1;
             }
         }
         KeyCode::Left | KeyCode::Right => {
             match app.import_options_cursor {
                 0 => app.import_fit = 1 - app.import_fit,
-                1 => app.import_color = 1 - app.import_color,
+                1 => app.import_color = (app.import_color + 1) % 3,
                 2 => app.import_charset = 1 - app.import_charset,
+                3 => app.import_normalize = !app.import_normalize,
+                4 => app.import_preserve_hue = !app.import_preserve_hue,
+                5 => app.import_posterize = (app.import_posterize + 1) % POSTERIZE_PRESETS.len(),
                 _ => {}
             }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            app.import_normalize = !app.import_normalize;
+        }
+        KeyCode::Char('h') | KeyCode::Char('H') => {
+            app.import_preserve_hue = !app.import_preserve_hue;
         }
         KeyCode::Enter => {
             do_import(app);
         }
         KeyCode::Esc => {
-            // Return to browse
-            app.mode = AppMode::ImportBrowse;
+            if app.clipboard_image.is_some() {
+                // Came from clipboard paste — return to normal
+                app.clipboard_image = None;
+                app.mode = AppMode::Normal;
+            } else {
+                // Return to file browse
+                app.mode = AppMode::ImportBrowse;
+            }
         }
         _ => {}
     }
@@ -1195,14 +1582,13 @@ fn handle_import_options(app: &mut App, code: KeyCode) {
 fn do_import(app: &mut App) {
     use crate::import::{self, FitMode, ImportCharSet, ImportColorMode, ImportOptions as ImportOpts};
 
-    let path = match &app.import_path {
-        Some(p) => p.clone(),
-        None => {
-            app.set_status_with_level("No file selected", MessageLevel::Warning);
-            app.mode = AppMode::Normal;
-            return;
-        }
-    };
+    let has_file = app.import_path.is_some();
+    let has_clipboard = app.clipboard_image.is_some();
+    if !has_file && !has_clipboard {
+        app.set_status_with_level("No file or clipboard image selected", MessageLevel::Warning);
+        app.mode = AppMode::Normal;
+        return;
+    }
 
     let fit_mode = if app.import_fit == 0 {
         FitMode::FitToCanvas
@@ -1210,10 +1596,10 @@ fn do_import(app: &mut App) {
         FitMode::CustomSize(app.canvas.width, app.canvas.height)
     };
 
-    let color_mode = if app.import_color == 0 {
-        ImportColorMode::Color256
-    } else {
-        ImportColorMode::Color16
+    let color_mode = match app.import_color {
+        0 => ImportColorMode::TrueColor,
+        1 => ImportColorMode::Color256,
+        _ => ImportColorMode::Color16,
     };
 
     let char_set = if app.import_charset == 0 {
@@ -1222,16 +1608,39 @@ fn do_import(app: &mut App) {
         ImportCharSet::HalfBlocks
     };
 
+    let posterize = POSTERIZE_PRESETS
+        .get(app.import_posterize)
+        .and_then(|(_, v)| *v);
+
+    // Auto-apply color boost for palette-limited modes to survive quantization
+    let color_boost = match color_mode {
+        ImportColorMode::TrueColor => 1.0,
+        ImportColorMode::Color256 => 1.2,
+        ImportColorMode::Color16 => 1.4,
+    };
+
     let opts = ImportOpts {
         fit_mode,
         color_mode,
         char_set,
+        color_boost,
+        preserve_hue: app.import_preserve_hue,
+        normalize: app.import_normalize,
+        posterize,
     };
 
     let target_w = app.canvas.width;
     let target_h = app.canvas.height;
 
-    match import::import_image(&path, target_w, target_h, &opts) {
+    // Import from clipboard image data or file path
+    let result = if let Some((ref rgba, w, h)) = app.clipboard_image {
+        import::import_image_data(rgba, w, h, target_w, target_h, &opts)
+    } else {
+        let path = app.import_path.as_ref().unwrap();
+        import::import_image(path, target_w, target_h, &opts)
+    };
+
+    match result {
         Ok(cells) => {
             // Snapshot for undo
             let old_cells = app.canvas.cells();
@@ -1259,20 +1668,26 @@ fn do_import(app: &mut App) {
             app.viewport_x = 0;
             app.viewport_y = 0;
 
-            // Check if GIF via extension
-            let is_gif = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("gif"))
-                .unwrap_or(false);
-            if is_gif {
-                app.set_status_with_level("Imported (GIF: first frame only)", MessageLevel::Success);
+            if has_clipboard {
+                app.set_status_with_level("Clipboard image imported", MessageLevel::Success);
+                app.clipboard_image = None;
             } else {
-                app.set_status_with_level("Image imported", MessageLevel::Success);
+                let path = app.import_path.as_ref().unwrap();
+                let is_gif = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("gif"))
+                    .unwrap_or(false);
+                if is_gif {
+                    app.set_status_with_level("Imported (GIF: first frame only)", MessageLevel::Success);
+                } else {
+                    app.set_status_with_level("Image imported", MessageLevel::Success);
+                }
             }
         }
         Err(e) => {
             app.set_status_with_level(&format!("Import failed: {}", e), MessageLevel::Error);
+            app.clipboard_image = None;
             app.mode = AppMode::Normal;
         }
     }
@@ -1503,10 +1918,10 @@ mod tests {
         let mut app = App::new();
         assert_eq!(app.mode, AppMode::Normal);
 
-        // Simulate Ctrl+I
+        // Simulate 'I' key (import)
         handle_event(
             &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL)),
+            Event::Key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT)),
             &area(),
         );
 
@@ -1514,7 +1929,7 @@ mod tests {
         assert!(
             app.mode == AppMode::ImportBrowse
                 || app.status_message.is_some(),
-            "Ctrl+I should open import dialog or show status"
+            "'I' should open import dialog or show status"
         );
     }
 
@@ -1571,6 +1986,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn test_import_browse_type_to_filter() {
+        let dir = std::env::temp_dir().join("kakukuma_test_browse_typefilter");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("alpha.png"), b"fake").unwrap();
+        std::fs::write(dir.join("beta.jpg"), b"fake").unwrap();
+        std::fs::write(dir.join("gamma.png"), b"fake").unwrap();
+
+        let mut app = App::new();
+        app.import_dir = dir.clone();
+        open_import_dialog(&mut app);
+        assert_eq!(app.mode, AppMode::ImportBrowse);
+
+        // All 3 images + ".." should be visible
+        let total = app.file_dialog_files.len();
+        assert!(total >= 4); // ".." + 3 images
+
+        // Type "al" to filter
+        handle_import_browse(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.import_filter, "a");
+        handle_import_browse(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.import_filter, "al");
+
+        // Only ".." + dirs + "alpha.png" should remain
+        assert!(app.file_dialog_files.iter().any(|e| e == "alpha.png"));
+        assert!(!app.file_dialog_files.iter().any(|e| e == "beta.jpg"));
+        assert!(!app.file_dialog_files.iter().any(|e| e == "gamma.png"));
+
+        // Backspace restores
+        handle_import_browse(&mut app, KeyCode::Backspace);
+        handle_import_browse(&mut app, KeyCode::Backspace);
+        assert!(app.import_filter.is_empty());
+        assert_eq!(app.file_dialog_files.len(), total);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // --- Import options tests ---
 
     #[test]
@@ -1585,19 +2037,62 @@ mod tests {
         handle_import_options(&mut app, KeyCode::Down);
         assert_eq!(app.import_options_cursor, 2);
 
-        // Can't go past 2
         handle_import_options(&mut app, KeyCode::Down);
-        assert_eq!(app.import_options_cursor, 2);
+        assert_eq!(app.import_options_cursor, 3);
+
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 4);
+
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 5);
+
+        // Can't go past 5
+        handle_import_options(&mut app, KeyCode::Down);
+        assert_eq!(app.import_options_cursor, 5);
 
         handle_import_options(&mut app, KeyCode::Up);
-        assert_eq!(app.import_options_cursor, 1);
+        assert_eq!(app.import_options_cursor, 4);
 
-        // Toggle color mode
-        assert_eq!(app.import_color, 0);
+        // Navigate to color row and toggle through 3 modes
+        app.import_options_cursor = 1;
+        assert_eq!(app.import_color, 1); // 256 (default)
         handle_import_options(&mut app, KeyCode::Right);
-        assert_eq!(app.import_color, 1);
+        assert_eq!(app.import_color, 2); // 16
+        handle_import_options(&mut app, KeyCode::Right);
+        assert_eq!(app.import_color, 0); // TrueColor
+        handle_import_options(&mut app, KeyCode::Right);
+        assert_eq!(app.import_color, 1); // wraps to 256
+    }
+
+    #[test]
+    fn test_import_options_toggle_normalize_hue() {
+        let mut app = App::new();
+        app.mode = AppMode::ImportOptions;
+
+        // Defaults
+        assert!(app.import_normalize);
+        assert!(app.import_preserve_hue);
+
+        // Toggle via N key
+        handle_import_options(&mut app, KeyCode::Char('N'));
+        assert!(!app.import_normalize);
+        handle_import_options(&mut app, KeyCode::Char('n'));
+        assert!(app.import_normalize);
+
+        // Toggle via H key
+        handle_import_options(&mut app, KeyCode::Char('H'));
+        assert!(!app.import_preserve_hue);
+        handle_import_options(&mut app, KeyCode::Char('h'));
+        assert!(app.import_preserve_hue);
+
+        // Toggle via arrow keys on rows 3 and 4
+        app.import_options_cursor = 3;
+        handle_import_options(&mut app, KeyCode::Right);
+        assert!(!app.import_normalize);
+
+        app.import_options_cursor = 4;
         handle_import_options(&mut app, KeyCode::Left);
-        assert_eq!(app.import_color, 0);
+        assert!(!app.import_preserve_hue);
     }
 
     #[test]
@@ -1620,15 +2115,15 @@ mod tests {
         app.canvas = Canvas::new_with_size(8, 8);
         app.import_path = Some(img_path.clone());
         app.import_charset = 0; // FullBlocks
-        app.import_color = 0;   // 256 color
+        app.import_color = 0;   // TrueColor
         app.import_fit = 0;     // FitToCanvas
 
         do_import(&mut app);
 
         assert_eq!(app.mode, AppMode::Normal);
-        // Cell (0,0) should have bg color (from the red image)
+        // Cell (0,0) should have fg color (full block from the red image)
         let cell = app.canvas.get(0, 0).unwrap();
-        assert!(cell.bg.is_some(), "Canvas cell should have imported color");
+        assert!(cell.fg.is_some(), "Canvas cell should have imported color");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1660,7 +2155,7 @@ mod tests {
 
         // Canvas should be modified
         let imported_cell = app.canvas.get(0, 0).unwrap();
-        assert!(imported_cell.bg.is_some());
+        assert!(imported_cell.fg.is_some());
 
         // Undo should restore
         app.undo();

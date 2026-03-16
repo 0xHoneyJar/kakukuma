@@ -1,4 +1,5 @@
 use std::io;
+use std::path::Path;
 
 use crate::cli::{CliColorFormat, PreviewFormat, load_project, to_color_format};
 use crate::export;
@@ -13,7 +14,7 @@ pub fn run(
     let cf = to_color_format(color_format);
 
     match format {
-        PreviewFormat::Ansi => {
+        PreviewFormat::Ansi | PreviewFormat::Auto => {
             let output = if let Some((x1, y1, x2, y2)) = region {
                 ansi_region(&project, x1, y1, x2, y2, cf)
             } else {
@@ -36,7 +37,38 @@ pub fn run(
             print!("{}", output);
             Ok(())
         }
+        PreviewFormat::Png => {
+            eprintln!("{{\"error\":\"PNG format not supported for preview (stdout). Use 'export' instead.\",\"code\":\"USER_ERROR\"}}");
+            std::process::exit(1);
+        }
     }
+}
+
+/// Detect export format from output file extension when format is Auto.
+fn detect_format(output: &str, explicit: &PreviewFormat) -> PreviewFormat {
+    if *explicit != PreviewFormat::Auto {
+        return explicit.clone();
+    }
+    match Path::new(output).extension().and_then(|e| e.to_str()) {
+        Some("png") => PreviewFormat::Png,
+        Some("json") => PreviewFormat::Json,
+        Some("txt") => PreviewFormat::Plain,
+        _ => PreviewFormat::Ansi,
+    }
+}
+
+/// Parse cell size string like "8x16" into (width, height).
+fn parse_cell_size(s: &str) -> Result<(u32, u32), String> {
+    let parts: Vec<&str> = s.split('x').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid cell size '{}', expected WxH (e.g., 8x16)", s));
+    }
+    let w = parts[0].parse::<u32>().map_err(|_| format!("Invalid width in '{}'", s))?;
+    let h = parts[1].parse::<u32>().map_err(|_| format!("Invalid height in '{}'", s))?;
+    if w == 0 || h == 0 || w > 64 || h > 64 {
+        return Err(format!("Cell size {}x{} out of range (1-64)", w, h));
+    }
+    Ok((w, h))
 }
 
 pub fn export_to_file(
@@ -44,35 +76,65 @@ pub fn export_to_file(
     output: &str,
     format: &PreviewFormat,
     color_format: &CliColorFormat,
+    cell_size: &str,
+    scale: u32,
+    no_crop: bool,
 ) -> io::Result<()> {
     let project = load_project(file);
     let cf = to_color_format(color_format);
+    let resolved_format = detect_format(output, format);
 
-    let content = match format {
-        PreviewFormat::Ansi => export::to_ansi(&project.canvas, cf),
-        PreviewFormat::Plain => export::to_plain_text(&project.canvas),
-        PreviewFormat::Json => json_preview(&project, None),
-    };
+    match resolved_format {
+        PreviewFormat::Png => {
+            let (cw, ch) = parse_cell_size(cell_size).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidInput, e)
+            })?;
+            let img = export::to_png(&project.canvas, cw, ch, scale, !no_crop);
+            let (w, h) = (img.width(), img.height());
+            img.save(output).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("PNG save failed: {}", e))
+            })?;
+            let json = serde_json::json!({
+                "exported": output,
+                "format": "png",
+                "width": w,
+                "height": h,
+                "cell_size": format!("{}x{}", cw, ch),
+            });
+            println!("{}", serde_json::to_string(&json).unwrap());
+        }
+        _ => {
+            let content = match resolved_format {
+                PreviewFormat::Ansi | PreviewFormat::Auto => export::to_ansi(&project.canvas, cf),
+                PreviewFormat::Plain => export::to_plain_text(&project.canvas),
+                PreviewFormat::Json => json_preview(&project, None),
+                PreviewFormat::Png => unreachable!(),
+            };
 
-    std::fs::write(output, &content)?;
+            std::fs::write(output, &content)?;
 
-    let format_str = match format {
-        PreviewFormat::Ansi => "ansi",
-        PreviewFormat::Plain => "plain",
-        PreviewFormat::Json => "json",
-    };
-    let cf_str = match color_format {
-        CliColorFormat::Truecolor => "truecolor",
-        CliColorFormat::Color256 => "256",
-        CliColorFormat::Color16 => "16",
-    };
+            let format_str = match resolved_format {
+                PreviewFormat::Ansi | PreviewFormat::Auto => "ansi",
+                PreviewFormat::Plain => "plain",
+                PreviewFormat::Json => "json",
+                PreviewFormat::Png => unreachable!(),
+            };
+            let cf_str = match color_format {
+                CliColorFormat::Auto => "auto",
+                CliColorFormat::Truecolor => "truecolor",
+                CliColorFormat::Color256 => "256",
+                CliColorFormat::Color256Hue => "256-hue",
+                CliColorFormat::Color16 => "16",
+            };
 
-    let json = serde_json::json!({
-        "exported": output,
-        "format": format_str,
-        "color_format": cf_str,
-    });
-    println!("{}", serde_json::to_string(&json).unwrap());
+            let json = serde_json::json!({
+                "exported": output,
+                "format": format_str,
+                "color_format": cf_str,
+            });
+            println!("{}", serde_json::to_string(&json).unwrap());
+        }
+    }
     Ok(())
 }
 
@@ -153,4 +215,54 @@ fn plain_region(
         }
     }
     export::to_plain_text(&sub)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_format_png() {
+        assert_eq!(detect_format("out.png", &PreviewFormat::Auto), PreviewFormat::Png);
+    }
+
+    #[test]
+    fn test_detect_format_txt() {
+        assert_eq!(detect_format("out.txt", &PreviewFormat::Auto), PreviewFormat::Plain);
+    }
+
+    #[test]
+    fn test_detect_format_json() {
+        assert_eq!(detect_format("out.json", &PreviewFormat::Auto), PreviewFormat::Json);
+    }
+
+    #[test]
+    fn test_detect_format_fallback_ansi() {
+        assert_eq!(detect_format("out.ans", &PreviewFormat::Auto), PreviewFormat::Ansi);
+        assert_eq!(detect_format("out", &PreviewFormat::Auto), PreviewFormat::Ansi);
+    }
+
+    #[test]
+    fn test_detect_format_explicit_overrides() {
+        assert_eq!(detect_format("out.png", &PreviewFormat::Plain), PreviewFormat::Plain);
+        assert_eq!(detect_format("out.txt", &PreviewFormat::Json), PreviewFormat::Json);
+    }
+
+    #[test]
+    fn test_parse_cell_size_valid() {
+        assert_eq!(parse_cell_size("8x16"), Ok((8, 16)));
+        assert_eq!(parse_cell_size("4x8"), Ok((4, 8)));
+        assert_eq!(parse_cell_size("64x64"), Ok((64, 64)));
+        assert_eq!(parse_cell_size("1x1"), Ok((1, 1)));
+    }
+
+    #[test]
+    fn test_parse_cell_size_invalid() {
+        assert!(parse_cell_size("0x16").is_err());
+        assert!(parse_cell_size("8x0").is_err());
+        assert!(parse_cell_size("65x16").is_err());
+        assert!(parse_cell_size("abc").is_err());
+        assert!(parse_cell_size("8").is_err());
+        assert!(parse_cell_size("8x").is_err());
+    }
 }

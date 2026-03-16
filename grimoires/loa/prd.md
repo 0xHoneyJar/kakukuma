@@ -1,27 +1,55 @@
-# PRD: Block Character Usability & CLI Polish
+# PRD: Import Fidelity & Color Intelligence
 
-> **Status**: Draft
-> **Created**: 2026-03-02
-> **Author**: AI Agent + @gumibera
-> **Cycle**: 020
+> **Status**: Approved
+> **Created**: 2026-03-06
+> **Updated**: 2026-03-14 (expanded to cover clipboard import, perceptual quantization, UI improvements)
+> **Author**: Loa (AI Agent) + @gumibera
+> **Cycle**: 022
 
 ---
 
 ## 1. Problem Statement
 
-Kakukuma supports 20 Unicode block elements for drawing, but discoverability is poor for both agents and humans:
+Kakukuma can import images and convert them to ANSI art, but the results require expert-level flag tuning to look good — and even then, the output may display incorrectly depending on terminal color support. The TUI import workflow is also clunky: no clipboard support, slow file navigation, and no way to control preprocessing. This is unacceptable for a tool that serves both human artists and AI agents.
 
-1. **CLI `--ch` flag is opaque**: The draw commands accept `--ch <char>` but don't document which characters are available. Agents must guess or hard-code Unicode codepoints. There's no way to query the available character set programmatically.
+Five concrete problems:
 
-2. **TUI block picker lacks labels**: The Shift+B picker shows a grid of 20 characters organized in 4 rows, but there are no category labels or character names. Users must recognize glyphs visually.
+### 1.1 Import Requires Expert Knowledge
 
-3. **No character name aliases**: CLI users must type raw Unicode (`--ch █`) which is error-prone and terminal-dependent. Named aliases like `--ch full` or `--ch shade-light` would be more ergonomic.
+Converting an image to readable ANSI art currently requires this incantation:
 
-4. **Unmerged cycle 19 work**: CLI normalization (positional args), auto-format detection, and PNG export engine were completed but never merged to main. This work needs to ship.
+```bash
+kakukuma import photo.png art.kaku --width 40 --height 14 --quantize truecolor --normalize --preserve-hue
+kakukuma export art.kaku art.ans --format ansi --color-format 256-hue
+```
 
-5. **Compiler warnings**: Two dead-code warnings on main (`Canvas::clear()`, `build_spans()`) indicate housekeeping debt.
+A user (or agent) who just runs `kakukuma import photo.png art.kaku` gets 256-color quantization without normalize or hue-preservation — producing muddy, gray output for most photographs. The defaults are wrong for the common case.
 
-> Source: Block character audit and agent CLI testing, 2026-03-02.
+> Source: Direct observation in cycle-020 session. Every test image required manual flag tuning.
+
+### 1.2 Terminal Color Mismatch
+
+The app has no way to detect terminal color capabilities. A user who exports with `--color-format truecolor` and views on macOS Terminal.app sees garbled white text because Terminal.app doesn't support `\e[38;2;r;g;bm`. There's no warning, no fallback, and the `256-hue` mode that would fix it is undiscoverable.
+
+> Source: `grimoires/loa/context/image-to-ansi-art.md` — truecolor renders as white on non-truecolor terminals
+
+### 1.3 No ANSI Preview Command
+
+The two-step import→export pipeline is correct architecturally (separation of concerns), but for the most common use case — "show me this image as ANSI art" — it's too many steps. There's no single command to go from image to terminal output.
+
+> Source: User workflow observation — every test required import + export + cat
+
+### 1.4 Brown/Dark Skin Tones Render Too Dark
+
+The xterm-256 color cube has a dead zone from 0→95 per channel. Dark chromatic colors (like brown skin tones ~RGB 180,120,70) lose their hue and snap to gray/black. The existing `nearest_256` uses plain Euclidean RGB distance which doesn't match human perception — a dark gray can be "closer" mathematically than the correct warm brown.
+
+> Source: User comparison of kakukuma import vs original image showing muddy skin tones.
+
+### 1.5 TUI Import Is Clunky
+
+No clipboard paste support — users must navigate the file browser every time. The file browser requires scrolling through long directory listings with no filtering. Import options lack preprocessing controls (normalize, posterize, hue-preserve) that are available on CLI. Full-blocks import mode renders blank due to `is_empty()` check treating `ch=' '` cells as empty.
+
+> Source: Direct user feedback during cycle-020 interactive sessions.
 
 ---
 
@@ -29,196 +57,160 @@ Kakukuma supports 20 Unicode block elements for drawing, but discoverability is 
 
 | Goal | Metric | Target |
 |------|--------|--------|
-| Agent discoverability | Agent can query all available characters programmatically | `kakukuma chars` returns JSON catalog |
-| Character name aliases | Named `--ch` values accepted | All 20 blocks have aliases |
-| TUI picker clarity | User can identify characters without guessing | Category labels + char names in picker |
-| Cycle 19 inclusion | CLI normalization + PNG export on main | Merged and tested |
-| Zero warnings | Compiler warnings | 0 |
-| Test coverage | All tests pass | 375+ existing + new tests |
+| Zero-config import produces readable results | Default import of photograph produces recognizable ANSI art | No manual flags needed for 80% of images |
+| Terminal-correct color output | ANSI art displays correctly on user's terminal | Auto-detect via COLORTERM env var |
+| Single-command image preview | Image → terminal output in one command | `kakukuma render image.png` |
+| Accurate skin tone / warm color reproduction | Brown/warm tones stay chromatic in 256-color mode | Perceptual quantization + brightness lift |
+| Clipboard import in TUI | Paste image from Finder via Ctrl+V | macOS clipboard integration |
+| Fast file navigation | Type-to-filter in import browse dialog | Character filtering + path mode |
+| Preserve existing power-user flags | All current flags remain functional | No regressions |
 
 ---
 
-## 3. Users
+## 3. Requirements
 
-### Primary: AI Agents (Claude, GPT, etc.)
-- Need to query available characters before drawing
-- Prefer named aliases over raw Unicode in commands
-- Parse JSON output for character metadata (name, category, codepoint)
+### 3.1 Smart Import Defaults (P0)
 
-### Secondary: Human Artists
-- Need visual identification in the TUI picker
-- Want keyboard shortcuts for common character categories
-- Expect clear --help documentation
+**What**: Change `import` defaults so the common case (photograph → readable ANSI art) works without flags.
 
----
+- Default `--quantize` should be `truecolor` (store full RGB, defer quantization to export)
+- Default `--normalize` should be `true` (most photographs benefit from histogram stretching)
+- Default `--preserve-hue` should be `true` (the dead-zone problem affects almost all images)
+- Add `--no-normalize` and `--no-preserve-hue` flags for opt-out
 
-## 4. Functional Requirements
+**Why**: The current defaults optimize for the uncommon case (pre-quantized art). Photographs are the primary import use case for both humans and agents.
 
-### FR-1: `kakukuma chars` CLI Command
+### 3.2 Terminal Color Auto-Detection (P0)
 
-**Priority**: P0
+**What**: Detect terminal color capabilities and choose the best export color format automatically.
 
-Add a new `chars` subcommand that lists all available block characters with metadata.
+Detection logic:
+1. Check `COLORTERM` env var: `truecolor` or `24bit` → use truecolor
+2. Check `TERM` env var: contains `256color` → use 256-color with hue preservation
+3. Fallback: use 256-color with hue preservation (safe default)
 
-**Output (default JSON)**:
-```json
-{
-  "characters": [
-    {"char": "█", "name": "full", "category": "primary", "codepoint": "U+2588"},
-    {"char": "▀", "name": "upper-half", "category": "primary", "codepoint": "U+2580"},
-    {"char": "░", "name": "shade-light", "category": "shade", "codepoint": "U+2591"}
-  ],
-  "categories": ["primary", "shade", "vertical-fill", "horizontal-fill"],
-  "total": 20
-}
+Apply this in:
+- `preview` command (default `--color-format` becomes `auto` instead of `truecolor`)
+- `export` command (same)
+- New `render` command
+
+**Why**: Users shouldn't need to know about COLORTERM to get correct output. The detection is standard across terminal emulators.
+
+### 3.3 `render` Command — Single-Step Image-to-Terminal (P1)
+
+**What**: New CLI command that takes an image path and outputs ANSI art directly to stdout.
+
+```bash
+# Minimal — smart defaults handle everything
+kakukuma render photo.png
+
+# With size control
+kakukuma render photo.png --width 60 --height 20
+
+# With explicit color format
+kakukuma render photo.png --color-format 256
 ```
 
-**Options**:
-- `--category <CAT>`: Filter by category (primary, shade, vertical-fill, horizontal-fill)
-- `--plain`: Output as human-readable table instead of JSON
+Internally this is import_image → to_ansi, no intermediate .kaku file. Uses all the smart defaults from 3.1 and auto-detection from 3.2.
 
-**Human-readable output (`--plain`)**:
-```
-PRIMARY (5):
-  █  full          U+2588
-  ▀  upper-half    U+2580
-  ▄  lower-half    U+2584
-  ▌  left-half     U+258C
-  ▐  right-half    U+2590
+**Why**: The most common use case should be the simplest command. Agents and users shouldn't need to understand the import→export pipeline for quick previews.
 
-SHADE (3):
-  ░  shade-light   U+2591
-  ▒  shade-medium  U+2592
-  ▓  shade-dark    U+2593
+### 3.4 Improve TUI Import Dialog (P1)
 
-VERTICAL-FILL (6):
-  ▁  lower-1-8     U+2581
-  ▂  lower-1-4     U+2582
-  ▃  lower-3-8     U+2583
-  ▅  lower-5-8     U+2585
-  ▆  lower-3-4     U+2586
-  ▇  lower-7-8     U+2587
+**What**: Expose the new import options in the TUI import flow:
+- Show normalize toggle (N key, default on)
+- Show preserve-hue toggle (H key, default on)
+- Show posterize selector (5 presets: Off, 8, 12, 16, 24 colors)
+- Source label shows "Clipboard image" when pasting
 
-HORIZONTAL-FILL (6):
-  ▉  left-7-8      U+2589
-  ▊  left-3-4      U+258A
-  ▋  left-5-8      U+258B
-  ▍  left-3-8      U+258D
-  ▎  left-1-4      U+258E
-  ▏  left-1-8      U+258F
-```
+**Why**: TUI users currently get the old defaults with no way to access the new flags without the CLI.
 
-### FR-2: Named Character Aliases for `--ch`
+### 3.5 Clipboard Image Import (P1)
 
-**Priority**: P0
+**What**: Allow users to paste images from macOS Finder into the TUI via Ctrl+V.
 
-All draw commands that accept `--ch` should accept named aliases in addition to raw characters:
+Detection logic:
+1. Try `osascript` to read file URL from macOS clipboard (Finder Cmd+C)
+2. Fall back to `arboard::get_image()` for raw pixel data (screenshots)
+3. Open import options dialog with source set to clipboard
 
-| Character | Alias | Alt Aliases |
-|-----------|-------|-------------|
-| `█` | `full` | `block` |
-| `▀` | `upper-half` | `top` |
-| `▄` | `lower-half` | `bottom` |
-| `▌` | `left-half` | `left` |
-| `▐` | `right-half` | `right` |
-| `░` | `shade-light` | `light` |
-| `▒` | `shade-medium` | `medium` |
-| `▓` | `shade-dark` | `dark` |
-| `▁` | `lower-1-8` | - |
-| `▂` | `lower-1-4` | - |
-| `▃` | `lower-3-8` | - |
-| `▅` | `lower-5-8` | - |
-| `▆` | `lower-3-4` | - |
-| `▇` | `lower-7-8` | - |
-| `▉` | `left-7-8` | - |
-| `▊` | `left-3-4` | - |
-| `▋` | `left-5-8` | - |
-| `▍` | `left-3-8` | - |
-| `▎` | `left-1-4` | - |
-| `▏` | `left-1-8` | - |
+**Why**: Navigating the file browser for every import is slow. Copy in Finder → Ctrl+V in kakukuma is the natural workflow.
 
-**Resolution order**:
-1. If `--ch` is a single character, use it directly (backward compatible)
-2. If `--ch` is a multi-character string, look up as alias name
-3. If alias not found, return structured JSON error
+### 3.6 Import Browse Type-to-Filter (P1)
 
-**Updated `--ch` help text**:
-```
---ch <CHAR>  Block character: raw char (█) or name (full, upper-half, shade-light, etc.)
-             Run 'kakukuma chars' for full list.
-```
+**What**: Allow typing in the import file browser to filter the file list.
+- Regular characters filter the displayed list in real-time
+- `/` or `~` enters path mode for absolute/home-relative paths
+- Tab completes matching files
+- Backspace clears filter
 
-### FR-3: TUI Block Picker Category Labels
+**Why**: Scrolling through large directories is painful. Type-to-filter is standard in file pickers.
 
-**Priority**: P1
+### 3.7 Perceptual Color Quantization (P0)
 
-Enhance the block picker dialog (Shift+B) with:
+**What**: Replace Euclidean RGB distance with perceptually-weighted distance in `nearest_256_hue()`.
 
-1. **Category headers**: "Primary", "Shades", "Vertical Fill", "Horizontal Fill" above each row
-2. **Selected char info**: Show the name and codepoint of the currently highlighted character at the bottom of the picker
+- Use "redmean" weighted formula (accounts for human color perception)
+- Add luminance preservation term with asymmetric dark penalty (darkening penalized 1.5× more)
+- Increase gray penalty from 8000 to 20000 for chromatic source pixels
+- Add brightness lift for dark chromatic pixels in `boost_saturation()` to escape dead zone
+- Auto-apply color_boost 1.2× for 256-color, 1.4× for 16-color in TUI
 
-### FR-4: Cycle 19 Integration
+**Why**: Brown skin tones, warm colors, and dark chromatic tones all lose their hue with plain Euclidean distance. Perceptual weighting keeps them warm and recognizable.
 
-**Priority**: P0
+### 3.8 Full Blocks Import Fix (P0)
 
-Merge the completed cycle 19 work from `feature/cycle-019-cli-polish-image-export`:
-- CLI argument normalization (positional args for export, import, batch, palette export)
-- Auto-format detection (file extension → format)
-- PNG export engine with block character rendering
-- All associated tests
+**What**: Fix `rasterize_full_blocks()` to use `ch: '█'` with `fg` color instead of `ch: ' '` with `bg` color.
 
-### FR-5: Compiler Warning Cleanup
-
-**Priority**: P2
-
-Fix the 2 dead-code warnings on main:
-- `Canvas::clear()` — either use it or remove the `pub` and add `#[allow(dead_code)]`
-- `build_spans()` in statusbar.rs — either use it or remove
+**Why**: The renderer's `is_empty()` checks `ch == ' '` — cells with space character are treated as empty regardless of bg color, making full-blocks imports appear blank.
 
 ---
 
-## 5. Technical Constraints
+## 4. Non-Goals
 
-- **Character alias lookup**: Must be compile-time data (const array or lazy_static), not runtime-loaded
-- **JSON output**: Must match existing structured JSON patterns (see export, inspect commands)
-- **Backward compatibility**: Raw `--ch █` must still work — aliases are additive
-- **TUI picker**: Must not increase picker dialog size beyond terminal minimum (80x24)
-- **Color**: `Color::Indexed(n)` only — no `Color::Rgb()` in terminal rendering
-
----
-
-## 6. Scope
-
-### In Scope
-- `kakukuma chars` command with JSON and plain output
-- Named `--ch` aliases for all 20 block characters
-- TUI picker category labels and selected-char info
-- Cycle 19 merge (CLI normalization + PNG export)
-- Compiler warning fixes
-- Tests for all new functionality
-
-### Out of Scope
-- Box drawing characters (future cycle)
-- New block characters (20 is sufficient)
-- TUI character search/filter
-- Changes to block cycling (B/G keys)
+- **Batch import of 10,000+ images** — Important future capability but out of scope for this cycle. Current architecture handles one image at a time. Batch support needs streaming/parallel architecture.
+- **Dithering** — Ordered dithering could help the 256-color dead zone but adds significant complexity. Deferred.
+- **Custom color palettes for import** — Interesting idea (e.g., "import this photo using only my project's palette") but scope creep for this cycle.
+- **Animated GIF support** — Currently imports first frame only. Multi-frame is a separate feature.
+- **Drag-and-drop** — Terminal.app's mouse capture intercepts drag events. Not possible without dropping mouse support. Clipboard paste is the alternative.
 
 ---
 
-## 7. Risks
+## 5. User Stories
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Cycle 19 merge conflicts | Blocks integration | Cherry-pick commit-by-commit, resolve incrementally |
-| Alias name collisions with Unicode chars | Confusing behavior | Single-char input always treated as raw char, multi-char as alias |
-| Picker labels make dialog too wide | Breaks on small terminals | Use abbreviated labels, test at 80-col minimum |
-| `--ch` help text too long | Clutters help output | Keep brief, point to `kakukuma chars` for full list |
+### 5.1 Human Artist
+> "I found a cool reference image and want to see what it looks like as ANSI art in my terminal. I run `kakukuma render ref.png` and it just works — correct colors, recognizable image."
+
+### 5.2 AI Agent
+> "I need to convert a product screenshot to ANSI art for display in a terminal dashboard. I run `kakukuma render screenshot.png --width 80 --height 24` and get correctly-colored output I can embed."
+
+### 5.3 Power User
+> "I'm creating a splash screen and need precise control. I import with truecolor, manually adjust in the TUI, then export with specific color settings. All the old flags still work."
 
 ---
 
-## 8. Dependencies
+## 6. Technical Context
 
-- Cycle 19 branch `feature/cycle-019-cli-polish-image-export` (existing work)
-- `clap` derive macros for new `chars` subcommand
-- `serde_json` for JSON output (already a dependency)
-- Existing `blocks` module in `src/cell.rs`
+### Existing Architecture
+- `src/import.rs`: `import_image()` (Lanczos3 downscale) and `import_mosaic()` (grid averaging)
+- `src/export.rs`: `to_ansi()` with `ColorFormat` enum (TrueColor, Color256, Color256Hue, Color16)
+- `src/cell.rs`: `nearest_256()`, `nearest_256_hue()`, `nearest_16()` quantizers
+- `src/cli/mod.rs`: `Import`, `Preview`, `Export` commands
+
+### Key Constraint
+- `Color::Indexed(n)` only in ratatui — truecolor escapes fail on many terminals
+- xterm-256 color cube: 0→95 dead zone makes dark chromatic colors quantize to gray
+- `nearest_256_hue()` mitigates this with saturation-aware penalty
+
+### Reference
+- `grimoires/loa/context/image-to-ansi-art.md` — Full technical analysis from cycle-020 exploration
+
+---
+
+## 7. Risks & Mitigations
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Changing defaults breaks existing workflows | Medium | Medium | Add `--no-normalize`, `--no-preserve-hue` escape hatches |
+| COLORTERM detection unreliable on some terminals | Low | Low | Always allow explicit `--color-format` override |
+| `render` command seen as redundant with `preview` | Low | Low | `render` takes image paths, `preview` takes .kaku files — distinct entry points |
