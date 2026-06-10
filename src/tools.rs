@@ -251,6 +251,168 @@ pub fn flood_fill(
     mutations
 }
 
+/// Compute the points of an ellipse outline inscribed in the bounding box
+/// (x0,y0)-(x1,y1). Parametric sampling at canvas scale (max 128 cells)
+/// produces a gap-free outline; duplicates are removed.
+pub fn ellipse_points(x0: usize, y0: usize, x1: usize, y1: usize) -> Vec<(usize, usize)> {
+    let min_x = x0.min(x1);
+    let max_x = x0.max(x1);
+    let min_y = y0.min(y1);
+    let max_y = y0.max(y1);
+
+    if min_x == max_x || min_y == max_y {
+        // Degenerate: a line
+        return bresenham_line(min_x, min_y, max_x, max_y);
+    }
+
+    let cx = (min_x + max_x) as f64 / 2.0;
+    let cy = (min_y + max_y) as f64 / 2.0;
+    let a = (max_x - min_x) as f64 / 2.0;
+    let b = (max_y - min_y) as f64 / 2.0;
+
+    let steps = (((a + b) * 8.0) as usize).max(16);
+    let mut points = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for i in 0..steps {
+        let theta = std::f64::consts::TAU * (i as f64) / (steps as f64);
+        let px = (cx + a * theta.cos()).round() as i64;
+        let py = (cy + b * theta.sin()).round() as i64;
+        if px >= 0 && py >= 0 && seen.insert((px, py)) {
+            points.push((px as usize, py as usize));
+        }
+    }
+    points
+}
+
+/// Draw an ellipse inscribed in the bounding box (x0,y0)-(x1,y1).
+#[allow(clippy::too_many_arguments)]
+pub fn ellipse(
+    canvas: &Canvas,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+    ch: char,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
+    filled: bool,
+) -> Vec<CellMutation> {
+    let new = Cell { ch, fg, bg };
+    let mut mutations = Vec::new();
+
+    if filled {
+        // Fill by inside test: |(x-cx)/a|^2 + |(y-cy)/b|^2 <= 1
+        let min_x = x0.min(x1) as f64;
+        let max_x = x0.max(x1) as f64;
+        let min_y = y0.min(y1) as f64;
+        let max_y = y0.max(y1) as f64;
+        let cx = (min_x + max_x) / 2.0;
+        let cy = (min_y + max_y) / 2.0;
+        let a = ((max_x - min_x) / 2.0).max(0.5);
+        let b = ((max_y - min_y) / 2.0).max(0.5);
+
+        for y in (min_y as usize)..=(max_y as usize) {
+            for x in (min_x as usize)..=(max_x as usize) {
+                let dx = (x as f64 - cx) / a;
+                let dy = (y as f64 - cy) / b;
+                if dx * dx + dy * dy <= 1.0 + f64::EPSILON {
+                    if let Some(old) = canvas.get(x, y) {
+                        if old != new {
+                            mutations.push(CellMutation { x, y, old, new });
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        for (x, y) in ellipse_points(x0, y0, x1, y1) {
+            if let Some(old) = canvas.get(x, y) {
+                if old != new {
+                    mutations.push(CellMutation { x, y, old, new });
+                }
+            }
+        }
+    }
+    mutations
+}
+
+/// Linear interpolation between two colors.
+fn lerp_rgb(from: Rgb, to: Rgb, t: f64) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    Rgb {
+        r: (from.r as f64 + (to.r as f64 - from.r as f64) * t).round() as u8,
+        g: (from.g as f64 + (to.g as f64 - from.g as f64) * t).round() as u8,
+        b: (from.b as f64 + (to.b as f64 - from.b as f64) * t).round() as u8,
+    }
+}
+
+/// Fill a region with a linear gradient between two colors.
+///
+/// `horizontal`: gradient runs left→right; otherwise top→bottom.
+/// `dither`: instead of smooth per-cell RGB interpolation, use the classic
+/// ANSI look — shade characters (`░▒▓`) blending `from` (bg) into `to` (fg)
+/// across four bands per color step.
+#[allow(clippy::too_many_arguments)]
+pub fn gradient_fill(
+    canvas: &Canvas,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+    from: Rgb,
+    to: Rgb,
+    horizontal: bool,
+    dither: bool,
+) -> Vec<CellMutation> {
+    use crate::cell::blocks;
+
+    let min_x = x0.min(x1);
+    let max_x = x0.max(x1).min(canvas.width.saturating_sub(1));
+    let min_y = y0.min(y1);
+    let max_y = y0.max(y1).min(canvas.height.saturating_sub(1));
+    if min_x > max_x || min_y > max_y {
+        return vec![];
+    }
+
+    let span = if horizontal {
+        (max_x - min_x).max(1) as f64
+    } else {
+        (max_y - min_y).max(1) as f64
+    };
+
+    let mut mutations = Vec::new();
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let t = if horizontal {
+                (x - min_x) as f64 / span
+            } else {
+                (y - min_y) as f64 / span
+            };
+
+            let new = if dither {
+                // 4 sub-bands per gradient position: from-solid, light,
+                // medium, dark shade of `to` over `from`.
+                let band = (t * 4.0).min(3.999) as usize;
+                match band {
+                    0 => Cell { ch: blocks::FULL, fg: Some(from), bg: None },
+                    1 => Cell { ch: blocks::SHADE_LIGHT, fg: Some(to), bg: Some(from) },
+                    2 => Cell { ch: blocks::SHADE_MEDIUM, fg: Some(to), bg: Some(from) },
+                    _ => Cell { ch: blocks::SHADE_DARK, fg: Some(to), bg: Some(from) },
+                }
+            } else {
+                Cell { ch: blocks::FULL, fg: Some(lerp_rgb(from, to, t)), bg: None }
+            };
+
+            if let Some(old) = canvas.get(x, y) {
+                if old != new {
+                    mutations.push(CellMutation { x, y, old, new });
+                }
+            }
+        }
+    }
+    mutations
+}
+
 /// Pick color from a canvas cell.
 pub fn eyedropper(canvas: &Canvas, x: usize, y: usize) -> Option<(Option<Rgb>, Option<Rgb>, char)> {
     canvas.get(x, y).map(|cell| (cell.fg, cell.bg, cell.ch))
@@ -616,5 +778,103 @@ mod tests {
         assert_eq!(mutations[0].new.ch, ' ');
         assert_eq!(mutations[0].new.fg, Some(Rgb::WHITE));
         assert_eq!(mutations[0].new.bg, None);
+    }
+
+    #[test]
+    fn test_ellipse_outline_touches_extremes() {
+        let canvas = Canvas::new_with_size(20, 20);
+        let mutations = ellipse(&canvas, 2, 2, 14, 10, blocks::FULL, RED, None, false);
+        assert!(!mutations.is_empty());
+        let points: Vec<(usize, usize)> = mutations.iter().map(|m| (m.x, m.y)).collect();
+        // Midpoints of each bounding box edge must be on the outline
+        assert!(points.contains(&(8, 2)), "top midpoint missing");
+        assert!(points.contains(&(8, 10)), "bottom midpoint missing");
+        assert!(points.contains(&(2, 6)), "left midpoint missing");
+        assert!(points.contains(&(14, 6)), "right midpoint missing");
+        // All points within bounding box
+        assert!(points.iter().all(|&(x, y)| (2..=14).contains(&x) && (2..=10).contains(&y)));
+        // No duplicates
+        let unique: std::collections::HashSet<_> = points.iter().collect();
+        assert_eq!(unique.len(), points.len());
+    }
+
+    #[test]
+    fn test_ellipse_filled_contains_center() {
+        let canvas = Canvas::new_with_size(20, 20);
+        let mutations = ellipse(&canvas, 2, 2, 14, 10, blocks::FULL, RED, None, true);
+        let points: Vec<(usize, usize)> = mutations.iter().map(|m| (m.x, m.y)).collect();
+        assert!(points.contains(&(8, 6)), "center missing from filled ellipse");
+        // Corners of the bounding box must NOT be inside the ellipse
+        assert!(!points.contains(&(2, 2)));
+        assert!(!points.contains(&(14, 10)));
+        // Filled has more cells than the outline
+        let outline = ellipse(&canvas, 2, 2, 14, 10, blocks::FULL, RED, None, false);
+        assert!(points.len() > outline.len());
+    }
+
+    #[test]
+    fn test_ellipse_degenerate_is_line() {
+        let canvas = Canvas::new_with_size(20, 20);
+        let mutations = ellipse(&canvas, 3, 5, 10, 5, blocks::FULL, RED, None, false);
+        assert_eq!(mutations.len(), 8); // horizontal line 3..=10
+        assert!(mutations.iter().all(|m| m.y == 5));
+    }
+
+    #[test]
+    fn test_gradient_smooth_endpoints() {
+        let canvas = Canvas::new_with_size(16, 16);
+        let from = Rgb::new(0, 0, 0);
+        let to = Rgb::new(255, 255, 255);
+        let mutations = gradient_fill(&canvas, 0, 0, 15, 15, from, to, false, false);
+        assert_eq!(mutations.len(), 256);
+        // Vertical: top row is `from`, bottom row is `to`
+        let top = mutations.iter().find(|m| m.x == 0 && m.y == 0).unwrap();
+        let bottom = mutations.iter().find(|m| m.x == 0 && m.y == 15).unwrap();
+        assert_eq!(top.new.fg, Some(from));
+        assert_eq!(bottom.new.fg, Some(to));
+        // Middle is in between
+        let mid = mutations.iter().find(|m| m.x == 0 && m.y == 8).unwrap();
+        let mid_fg = mid.new.fg.unwrap();
+        assert!(mid_fg.r > 0 && mid_fg.r < 255);
+    }
+
+    #[test]
+    fn test_gradient_horizontal_direction() {
+        let canvas = Canvas::new_with_size(16, 16);
+        let from = Rgb::new(255, 0, 0);
+        let to = Rgb::new(0, 0, 255);
+        let mutations = gradient_fill(&canvas, 0, 0, 15, 15, from, to, true, false);
+        let left = mutations.iter().find(|m| m.x == 0 && m.y == 5).unwrap();
+        let right = mutations.iter().find(|m| m.x == 15 && m.y == 5).unwrap();
+        assert_eq!(left.new.fg, Some(from));
+        assert_eq!(right.new.fg, Some(to));
+    }
+
+    #[test]
+    fn test_gradient_dither_uses_shades() {
+        let canvas = Canvas::new_with_size(16, 16);
+        let from = Rgb::new(0, 0, 128);
+        let to = Rgb::new(255, 136, 0);
+        let mutations = gradient_fill(&canvas, 0, 0, 15, 15, from, to, false, true);
+        assert_eq!(mutations.len(), 256);
+        let chars: std::collections::HashSet<char> =
+            mutations.iter().map(|m| m.new.ch).collect();
+        // All four band characters appear across a full-height gradient
+        assert!(chars.contains(&blocks::FULL));
+        assert!(chars.contains(&blocks::SHADE_LIGHT));
+        assert!(chars.contains(&blocks::SHADE_MEDIUM));
+        assert!(chars.contains(&blocks::SHADE_DARK));
+    }
+
+    #[test]
+    fn test_gradient_clamps_to_canvas() {
+        let canvas = Canvas::new_with_size(8, 8);
+        let mutations = gradient_fill(
+            &canvas, 0, 0, 100, 100,
+            Rgb::new(0, 0, 0), Rgb::new(255, 255, 255),
+            false, false,
+        );
+        assert_eq!(mutations.len(), 64); // clamped to 8x8
+        assert!(mutations.iter().all(|m| m.x < 8 && m.y < 8));
     }
 }

@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod chars;
+pub mod describe;
 pub mod draw;
 pub mod preview;
 pub mod inspect;
@@ -130,6 +131,35 @@ pub enum Command {
     Stats {
         /// Path to .kaku file
         file: String,
+    },
+
+    /// Compact semantic canvas representation (legend + symbol grid + hash).
+    ///
+    /// Token-efficient perception for agents: each distinct cell appearance
+    /// gets one legend symbol; the grid is one symbol per cell, '.' = empty.
+    Describe {
+        /// Path to .kaku file
+        file: String,
+        /// Human-readable output instead of JSON
+        #[arg(long)]
+        plain: bool,
+    },
+
+    /// One-call perception: write a PNG render AND print the describe output.
+    ///
+    /// The agent feedback loop primitive: draw, snapshot, look at the PNG,
+    /// reason over the grid, verify with the hash.
+    Snapshot {
+        /// Path to .kaku file
+        file: String,
+        /// PNG output path (default: <file>.png)
+        png: Option<String>,
+        /// Cell size for PNG export (WxH pixels)
+        #[arg(long, default_value = "8x16")]
+        cell_size: String,
+        /// Integer scale factor for PNG export
+        #[arg(long, default_value_t = 1)]
+        scale: u32,
     },
 
     /// Undo last CLI operation.
@@ -363,6 +393,54 @@ pub enum DrawTool {
         #[arg(value_parser = parse_coord)]
         coord: (usize, usize),
     },
+    /// Draw an ellipse inscribed in a bounding box
+    Ellipse {
+        /// Path to .kaku file
+        file: String,
+        /// Top-left of bounding box (x,y)
+        #[arg(value_parser = parse_coord)]
+        from: (usize, usize),
+        /// Bottom-right of bounding box (x,y)
+        #[arg(value_parser = parse_coord)]
+        to: (usize, usize),
+        /// Fill the ellipse
+        #[arg(long)]
+        filled: bool,
+        #[command(flatten)]
+        opts: DrawOpts,
+    },
+    /// Fill a region with a linear color gradient
+    Gradient {
+        /// Path to .kaku file
+        file: String,
+        /// Top-left of region (x,y)
+        #[arg(value_parser = parse_coord)]
+        from: (usize, usize),
+        /// Bottom-right of region (x,y)
+        #[arg(value_parser = parse_coord)]
+        to: (usize, usize),
+        /// Start color (hex, e.g. "#000080")
+        #[arg(long)]
+        start: String,
+        /// End color (hex, e.g. "#FF8800")
+        #[arg(long)]
+        end: String,
+        /// Gradient direction
+        #[arg(long, default_value = "vertical")]
+        direction: GradientDirection,
+        /// Use shade-character dithering (classic ANSI look) instead of smooth RGB
+        #[arg(long)]
+        dither: bool,
+        /// Skip operation log (no undo for this operation)
+        #[arg(long)]
+        no_log: bool,
+    },
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+pub enum GradientDirection {
+    Horizontal,
+    Vertical,
 }
 
 #[derive(clap::Args)]
@@ -579,6 +657,10 @@ pub fn run(cmd: Command) -> io::Result<()> {
             diff::run(&file1, file2.as_deref(), before)
         }
         Command::Stats { file } => stats::run(&file),
+        Command::Describe { file, plain } => describe::run(&file, plain),
+        Command::Snapshot { file, png, cell_size, scale } => {
+            describe::snapshot(&file, png.as_deref(), &cell_size, scale)
+        }
         Command::Undo { file, count } => history_cmd::undo(&file, count),
         Command::Redo { file, count } => history_cmd::redo(&file, count),
         Command::History { file, full } => history_cmd::history(&file, full),
@@ -638,6 +720,7 @@ fn cmd_resize(
         "old_height": old_h,
         "new_width": actual_w,
         "new_height": actual_h,
+        "hash": project.canvas.content_hash(),
     });
     if clamped {
         json["clamped"] = serde_json::json!(true);
@@ -683,6 +766,7 @@ fn cmd_clear(file: &str, region: Option<(usize, usize, usize, usize)>) -> io::Re
         "region": region.map(|(x1,y1,x2,y2)| serde_json::json!({
             "x1": x1, "y1": y1, "x2": x2, "y2": y2
         })),
+        "hash": project.canvas.content_hash(),
     });
     println!("{}", serde_json::to_string(&json).unwrap());
     Ok(())
@@ -758,6 +842,7 @@ fn cmd_import(
         "width": w,
         "height": h,
         "color_mode": format!("{:?}", color_mode),
+        "hash": project.canvas.content_hash(),
     });
     println!("{}", serde_json::to_string(&json).unwrap());
     Ok(())

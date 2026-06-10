@@ -28,6 +28,12 @@ pub fn run(tool: DrawTool) -> io::Result<()> {
         DrawTool::Rect { file, from, to, filled, opts } => cmd_rect(&file, from, to, filled, &opts),
         DrawTool::Fill { file, coord, opts } => cmd_fill(&file, coord, &opts),
         DrawTool::Eyedropper { file, coord } => cmd_eyedropper(&file, coord),
+        DrawTool::Ellipse { file, from, to, filled, opts } => {
+            cmd_ellipse(&file, from, to, filled, &opts)
+        }
+        DrawTool::Gradient { file, from, to, start, end, direction, dither, no_log } => {
+            cmd_gradient(&file, from, to, &start, &end, &direction, dither, no_log)
+        }
     }
 }
 
@@ -77,6 +83,7 @@ fn apply_and_save(
         "cells_modified": cells_modified,
         "tool": tool_name,
         "symmetry": sym_label,
+        "hash": project.canvas.content_hash(),
     });
     println!("{}", serde_json::to_string(&json).unwrap());
     Ok(())
@@ -151,6 +158,65 @@ fn cmd_fill(file: &str, coord: (usize, usize), opts: &DrawOpts) -> io::Result<()
     drop(project);
 
     apply_and_save(file, "fill", mutations, Some(opts))
+}
+
+fn cmd_ellipse(
+    file: &str,
+    from: (usize, usize),
+    to: (usize, usize),
+    filled: bool,
+    opts: &DrawOpts,
+) -> io::Result<()> {
+    let project = load_project(file);
+    let (fg, bg) = resolve_colors(opts);
+    let ch = resolve_ch(opts);
+
+    let mutations = tools::ellipse(&project.canvas, from.0, from.1, to.0, to.1, ch, fg, bg, filled);
+    drop(project);
+
+    apply_and_save(file, "ellipse", mutations, Some(opts))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_gradient(
+    file: &str,
+    from: (usize, usize),
+    to: (usize, usize),
+    start: &str,
+    end: &str,
+    direction: &crate::cli::GradientDirection,
+    dither: bool,
+    no_log: bool,
+) -> io::Result<()> {
+    let project = load_project(file);
+
+    let start_rgb = crate::cell::parse_hex_color(start).unwrap_or_else(|| {
+        cli_error(&format!("Invalid hex color '{}'. Expected format: #RRGGBB", start))
+    });
+    let end_rgb = crate::cell::parse_hex_color(end).unwrap_or_else(|| {
+        cli_error(&format!("Invalid hex color '{}'. Expected format: #RRGGBB", end))
+    });
+    let horizontal = matches!(direction, crate::cli::GradientDirection::Horizontal);
+
+    let mutations = tools::gradient_fill(
+        &project.canvas,
+        from.0, from.1, to.0, to.1,
+        start_rgb, end_rgb,
+        horizontal, dither,
+    );
+    drop(project);
+
+    // Gradient has no DrawOpts; reuse apply_and_save with a synthetic opts
+    // only for the no_log flag.
+    let synthetic = DrawOpts {
+        color: None,
+        fg: None,
+        bg: None,
+        ch: None,
+        symmetry: crate::cli::CliSymmetry::Off,
+        no_log,
+    };
+    apply_and_save(file, "gradient", mutations, Some(&synthetic))
 }
 
 fn cmd_eyedropper(file: &str, coord: (usize, usize)) -> io::Result<()> {
