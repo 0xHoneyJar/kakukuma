@@ -50,6 +50,7 @@ pub enum PaletteItem {
 /// Collapsible palette sections below the curated palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteSection {
+    Recent,
     Standard,
     HueGroups,
     Grayscale,

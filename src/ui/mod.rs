@@ -6,6 +6,7 @@ pub mod statusbar;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, AppMode};
@@ -155,8 +156,14 @@ pub fn render(f: &mut Frame, app: &App) -> CanvasArea {
         AppMode::PaletteRename => render_text_input(f, app, size, "Rename Palette", "Enter new name:"),
         AppMode::PaletteExport => render_text_input(f, app, size, "Export Palette", "Enter destination path:"),
         AppMode::NewCanvas => render_new_canvas(f, app, size),
+        AppMode::ResizeCanvas => render_resize_canvas(f, app, size),
+        AppMode::ResizeCropConfirm => render_resize_crop_confirm(f, app, size),
         AppMode::HexColorInput => render_hex_input(f, app, size),
         AppMode::BlockPicker => render_block_picker(f, app, size),
+        AppMode::ImportBrowse => render_import_browse(f, app, size),
+        AppMode::ImportOptions => render_import_options(f, app, size),
+        AppMode::CommandPalette => render_command_palette(f, app, size),
+        AppMode::GotoInput => render_goto_input(f, app, size),
         _ => {}
     }
 
@@ -962,7 +969,7 @@ fn render_block_picker(f: &mut Frame, app: &App, area: Rect) {
 
     let theme = app.theme();
     let width = 38u16;
-    let height = 10u16;
+    let height = 11u16;
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let dialog_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
@@ -995,7 +1002,24 @@ fn render_block_picker(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(spans));
     }
 
-    lines.push(Line::from(""));
+    // Show selected character info
+    let selected_ch = categories[app.block_picker_row]
+        .get(app.block_picker_col)
+        .copied();
+    let info_text = if let Some(ch) = selected_ch {
+        if let Some(info) = blocks::char_info(ch) {
+            format!(" {} {} ({})", ch, info.name, info.codepoint)
+        } else {
+            format!(" {}", ch)
+        }
+    } else {
+        String::new()
+    };
+    lines.push(Line::from(Span::styled(
+        info_text,
+        Style::default().fg(theme.highlight).bg(theme.panel_bg),
+    )));
+
     lines.push(Line::from(Span::styled(
         " \u{2190}\u{2192}\u{2191}\u{2193} Navigate  Enter Select  Esc Cancel",
         Style::default().fg(theme.dim).bg(theme.panel_bg),
@@ -1015,11 +1039,19 @@ fn render_block_picker(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_new_canvas(f: &mut Frame, app: &App, area: Rect) {
+    render_canvas_size_dialog(f, app, area, " New Canvas ", false);
+}
+
+fn render_resize_canvas(f: &mut Frame, app: &App, area: Rect) {
+    render_canvas_size_dialog(f, app, area, " Resize Canvas ", true);
+}
+
+fn render_resize_crop_confirm(f: &mut Frame, app: &App, area: Rect) {
     use ratatui::text::{Line, Span};
 
     let theme = app.theme();
-    let w = 30u16;
-    let h = 8u16;
+    let w = 38u16;
+    let h = 7u16;
     let dialog_area = Rect::new(
         area.width.saturating_sub(w) / 2,
         area.height.saturating_sub(h) / 2,
@@ -1028,38 +1060,374 @@ fn render_new_canvas(f: &mut Frame, app: &App, area: Rect) {
     );
     f.render_widget(Clear, dialog_area);
 
-    let w_style = if app.new_canvas_cursor == 0 {
-        Style::default().fg(Color::Black).bg(theme.highlight).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let h_style = if app.new_canvas_cursor == 1 {
-        Style::default().fg(Color::Black).bg(theme.highlight).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
     let dim = Style::default().fg(theme.dim);
+    let warn = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled(" Width:  ", dim),
-            Span::styled(format!("\u{25C0} {:>3} \u{25B6}", app.new_canvas_width), w_style),
-        ]),
+        Line::from(Span::styled(" Content will be cropped!", warn)),
         Line::from(Span::raw("")),
-        Line::from(vec![
-            Span::styled(" Height: ", dim),
-            Span::styled(format!("\u{25C0} {:>3} \u{25B6}", app.new_canvas_height), h_style),
-        ]),
+        Line::from(Span::styled(
+            format!(" {}x{} \u{2192} {}x{}", app.canvas.width, app.canvas.height, app.new_canvas_width, app.new_canvas_height),
+            Style::default().fg(Color::White),
+        )),
         Line::from(Span::raw("")),
-        Line::from(Span::styled(" Enter=Create  Esc=Cancel", dim)),
+        Line::from(Span::styled(" Enter=Confirm  Any key=Cancel", dim)),
     ];
 
     let dialog = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(" New Canvas ")
+            .title(" Resize Warning ")
+            .style(Style::default().fg(Color::Yellow).bg(theme.panel_bg)),
+    );
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_canvas_size_dialog(f: &mut Frame, app: &App, area: Rect, title: &str, show_current: bool) {
+    use ratatui::text::{Line, Span};
+
+    let theme = app.theme();
+    let w = 34u16;
+    let h = if show_current { 10u16 } else { 9u16 };
+    let dialog_area = Rect::new(
+        area.width.saturating_sub(w) / 2,
+        area.height.saturating_sub(h) / 2,
+        w.min(area.width),
+        h.min(area.height),
+    );
+    f.render_widget(Clear, dialog_area);
+
+    let active_style = Style::default().fg(Color::Black).bg(theme.highlight).add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(Color::White);
+    let dim = Style::default().fg(theme.dim);
+
+    // Show the input buffer for the active field, stored value for the other
+    let (w_display, h_display) = if app.new_canvas_cursor == 0 {
+        (format!("{}_", app.new_canvas_input), format!("{}", app.new_canvas_height))
+    } else {
+        (format!("{}", app.new_canvas_width), format!("{}_", app.new_canvas_input))
+    };
+
+    let w_style = if app.new_canvas_cursor == 0 { active_style } else { inactive_style };
+    let h_style = if app.new_canvas_cursor == 1 { active_style } else { inactive_style };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" Width:  ", dim),
+            Span::styled(format!("\u{25C0} {:>4} \u{25B6}", w_display), w_style),
+        ]),
+        Line::from(Span::raw("")),
+        Line::from(vec![
+            Span::styled(" Height: ", dim),
+            Span::styled(format!("\u{25C0} {:>4} \u{25B6}", h_display), h_style),
+        ]),
+    ];
+
+    if show_current {
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            format!(" Current: {}x{}", app.canvas.width, app.canvas.height),
+            dim,
+        )));
+    }
+
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        " \u{2190}\u{2192}=\u{00B1}1  Type digits  Tab=switch",
+        dim,
+    )));
+    lines.push(Line::from(Span::styled(" Enter=OK  Esc=Cancel", dim)));
+
+    let dialog = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(title)
             .style(Style::default().fg(theme.accent).bg(theme.panel_bg)),
     );
     f.render_widget(dialog, dialog_area);
+}
+
+fn render_import_browse(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let file_count = app.file_dialog_files.len();
+    let height = (file_count as u16 + 4).min(20);
+    let width = 50;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(x, y, width, height);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Show current directory (truncated)
+    let dir_str = app.import_dir.to_string_lossy();
+    let dir_display = if dir_str.len() > 44 {
+        format!("...{}", &dir_str[dir_str.len() - 41..])
+    } else {
+        dir_str.to_string()
+    };
+    lines.push(Line::from(Span::styled(
+        format!(" {}", dir_display),
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let visible_start = if app.file_dialog_selected > (height as usize).saturating_sub(6) {
+        app.file_dialog_selected - (height as usize).saturating_sub(6)
+    } else {
+        0
+    };
+
+    for (i, filename) in app.file_dialog_files.iter().enumerate().skip(visible_start) {
+        if lines.len() >= (height as usize).saturating_sub(3) {
+            break;
+        }
+        let is_selected = i == app.file_dialog_selected;
+        let prefix = if is_selected { "> " } else { "  " };
+        let style = if is_selected {
+            Style::default().fg(Color::Black).bg(theme.highlight)
+        } else if filename.ends_with('/') {
+            Style::default().fg(theme.accent).bg(theme.panel_bg)
+        } else {
+            Style::default().fg(Color::White).bg(theme.panel_bg)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{}{}", prefix, filename),
+            style,
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " \u{2191}\u{2193} Navigate  Enter Open  Esc Cancel",
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .style(Style::default().fg(Color::White).bg(theme.panel_bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Import Image ")
+                .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
+        );
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_import_options(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let height = 17u16;
+    let width = 48;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(x, y, width, height);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Show selected file name
+    let filename = app
+        .import_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("(unknown)");
+    lines.push(Line::from(Span::styled(
+        format!(" File: {}", filename),
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+    lines.push(Line::from(""));
+
+    let cursor = app.import_options_cursor;
+
+    let row_style = |row: usize| -> Style {
+        if cursor == row {
+            Style::default().fg(Color::Black).bg(theme.highlight)
+        } else {
+            Style::default().fg(Color::White).bg(theme.panel_bg)
+        }
+    };
+
+    // Row 0: Fit mode
+    let fit_label = if app.import_fit == 0 { "Fit to Canvas" } else { "Custom Size" };
+    lines.push(Line::from(Span::styled(
+        format!("  Fit:       < {} >", fit_label),
+        row_style(0),
+    )));
+
+    // Row 1: Color mode
+    let color_label = match app.import_color {
+        0 => "TrueColor",
+        1 => "256 Color",
+        _ => "16 Color",
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  Colors:    < {} >", color_label),
+        row_style(1),
+    )));
+
+    // Row 2: Character set
+    let charset_label = if app.import_charset == 0 { "Full Blocks" } else { "Half Blocks" };
+    lines.push(Line::from(Span::styled(
+        format!("  Charset:   < {} >", charset_label),
+        row_style(2),
+    )));
+
+    // Row 3: Normalize toggle
+    let norm_label = if app.import_normalize { "ON" } else { "OFF" };
+    lines.push(Line::from(Span::styled(
+        format!("  [N]ormalize:    {}", norm_label),
+        row_style(3),
+    )));
+
+    // Row 4: Hue preserve toggle
+    let hue_label = if app.import_preserve_hue { "ON" } else { "OFF" };
+    lines.push(Line::from(Span::styled(
+        format!("  [H]ue preserve: {}", hue_label),
+        row_style(4),
+    )));
+
+    // Row 5: Posterize
+    let poster_label = match app.import_posterize {
+        0 => "Off",
+        1 => "8 colors",
+        2 => "12 colors",
+        3 => "16 colors",
+        4 => "24 colors",
+        _ => "Off",
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  Posterize: < {} >", poster_label),
+        row_style(5),
+    )));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " \u{2190}\u{2192} Change  N/H Toggle  Enter Import  Esc Back",
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .style(Style::default().fg(Color::White).bg(theme.panel_bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Import Options ")
+                .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
+        );
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_command_palette(f: &mut Frame, app: &App, area: Rect) {
+    use crate::app::COMMANDS;
+
+    let theme = app.theme();
+    let width = 52u16.min(area.width.saturating_sub(4));
+    let max_visible = 10usize;
+    let height = (max_visible as u16 + 4).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + area.height / 6;
+
+    let dialog_area = Rect::new(x, y, width, height);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Input line
+    let input_line = format!("> {}", app.palette_query);
+    lines.push(Line::from(Span::styled(
+        input_line,
+        Style::default().fg(Color::White).bg(theme.panel_bg),
+    )));
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(width.saturating_sub(2) as usize),
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let total = app.palette_filtered.len();
+    let scroll = if app.palette_selected_cmd >= max_visible {
+        app.palette_selected_cmd - max_visible + 1
+    } else {
+        0
+    };
+
+    let visible_end = total.min(scroll + max_visible);
+    for i in scroll..visible_end {
+        let cmd_idx = app.palette_filtered[i];
+        let cmd = &COMMANDS[cmd_idx];
+        let is_selected = i == app.palette_selected_cmd;
+
+        let inner_w = width.saturating_sub(2) as usize;
+        let shortcut_len = cmd.shortcut.len();
+        let name_max = inner_w.saturating_sub(shortcut_len + 1);
+        let name_display: String = if cmd.name.len() > name_max {
+            cmd.name[..name_max].to_string()
+        } else {
+            cmd.name.to_string()
+        };
+        let padding = inner_w.saturating_sub(name_display.len() + shortcut_len);
+
+        let style = if is_selected {
+            Style::default().fg(Color::Black).bg(theme.highlight)
+        } else {
+            Style::default().fg(Color::White).bg(theme.panel_bg)
+        };
+        let shortcut_style = if is_selected {
+            Style::default().fg(Color::Black).bg(theme.highlight)
+        } else {
+            Style::default().fg(theme.dim).bg(theme.panel_bg)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {}", name_display), style),
+            Span::styled(" ".repeat(padding), style),
+            Span::styled(cmd.shortcut.to_string(), shortcut_style),
+            Span::styled(" ", style),
+        ]));
+    }
+
+    let rendered = visible_end.saturating_sub(scroll);
+    for _ in rendered..max_visible {
+        lines.push(Line::from(Span::styled(
+            " ".repeat(width.saturating_sub(2) as usize),
+            Style::default().bg(theme.panel_bg),
+        )));
+    }
+
+    let dialog = Paragraph::new(lines)
+        .style(Style::default().fg(Color::White).bg(theme.panel_bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Commands ")
+                .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
+        );
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_goto_input(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let dialog_w = 30u16.min(area.width.saturating_sub(4));
+    let dialog_h = 3u16;
+    let x = area.x + (area.width.saturating_sub(dialog_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(dialog_h)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_w, dialog_h);
+    f.render_widget(Clear, dialog_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Go to x,y ")
+        .border_style(Style::default().fg(theme.accent))
+        .style(Style::default().bg(theme.panel_bg));
+    let inner = block.inner(dialog_area);
+    f.render_widget(block, dialog_area);
+    let input = Paragraph::new(Line::from(Span::styled(
+        format!("{}\u{258F}", app.goto_input),
+        Style::default().fg(Color::White).bg(theme.panel_bg),
+    )));
+    f.render_widget(input, inner);
 }

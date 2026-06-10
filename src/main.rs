@@ -1,20 +1,25 @@
+// Re-export library modules so binary-internal modules can use crate::
+pub use kakukuma::canvas;
+pub use kakukuma::cell;
+pub use kakukuma::export;
+pub use kakukuma::history;
+pub use kakukuma::import;
+pub use kakukuma::oplog;
+pub use kakukuma::palette;
+pub use kakukuma::project;
+pub use kakukuma::symmetry;
+pub use kakukuma::theme;
+pub use kakukuma::tools;
+
 mod app;
-mod canvas;
-mod cell;
-mod export;
-mod history;
+mod cli;
 mod input;
-mod palette;
-mod project;
-mod symmetry;
-mod theme;
-mod tools;
 mod ui;
 
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -23,13 +28,29 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use app::App;
+use clap::Parser;
 use input::CanvasArea;
 
 fn main() -> io::Result<()> {
+    let args = cli::Cli::parse();
+
+    match args.command {
+        Some(cmd) => {
+            // CLI path — no terminal initialization
+            cli::run(cmd)
+        }
+        None => {
+            // TUI path — existing behavior
+            run_tui(args.file)
+        }
+    }
+}
+
+fn run_tui(file: Option<String>) -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -37,25 +58,26 @@ fn main() -> io::Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste);
         original_hook(panic_info);
     }));
 
-    let result = run(&mut terminal);
+    let result = run(&mut terminal, file);
 
     // Restore terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
 
     result
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, file: Option<String>) -> io::Result<()> {
     let mut app = App::new();
     let mut canvas_area = CanvasArea {
         left: 0,
@@ -67,9 +89,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
     };
 
     // Load file from command-line argument if provided
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
-        app.load_project(&args[1]);
+    if let Some(ref path) = file {
+        app.load_project(path);
     }
 
     // Check for autosave recovery on startup (only if no file was loaded)
@@ -92,6 +113,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
             let event = event::read()?;
             input::handle_event(&mut app, event, &canvas_area);
         }
+
+        // Flush paste buffer if deadline has passed (drag-and-drop path detection)
+        input::tick_paste_buffer(&mut app);
 
         // Tick status message timer
         app.tick_status();

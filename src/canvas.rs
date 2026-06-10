@@ -48,13 +48,29 @@ impl Canvas {
         }
     }
 
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.cells = vec![vec![Cell::default(); self.width]; self.height];
     }
 
+    /// Returns true if every cell is in its default state (no art drawn).
+    pub fn is_empty(&self) -> bool {
+        let default = Cell::default();
+        self.cells.iter().all(|row| row.iter().all(|cell| *cell == default))
+    }
+
+    /// Clone the entire cell grid (for history snapshots).
+    pub fn cells(&self) -> Vec<Vec<Cell>> {
+        self.cells.clone()
+    }
+
+    /// Replace the entire cell grid and dimensions (for history snapshot restore).
+    pub fn replace(&mut self, cells: Vec<Vec<Cell>>, width: usize, height: usize) {
+        self.cells = cells;
+        self.width = width;
+        self.height = height;
+    }
+
     /// Resize the canvas, preserving existing content where it overlaps.
-    #[allow(dead_code)]
     pub fn resize(&mut self, new_width: usize, new_height: usize) {
         let w = new_width.clamp(MIN_DIMENSION, MAX_DIMENSION);
         let h = new_height.clamp(MIN_DIMENSION, MAX_DIMENSION);
@@ -194,5 +210,28 @@ mod tests {
         assert_eq!(canvas.height, 16);
         assert_eq!(canvas.get(5, 5), Some(cell));
         assert_eq!(canvas.get(20, 20), None); // Now out of bounds
+    }
+
+    #[test]
+    fn test_is_empty_fresh_canvas() {
+        let canvas = Canvas::new();
+        assert!(canvas.is_empty(), "Fresh canvas should be empty");
+    }
+
+    #[test]
+    fn test_is_empty_after_set() {
+        let mut canvas = Canvas::new();
+        let cell = Cell { ch: blocks::FULL, fg: RED, bg: None };
+        canvas.set(0, 0, cell);
+        assert!(!canvas.is_empty(), "Canvas with one cell set should not be empty");
+    }
+
+    #[test]
+    fn test_is_empty_after_clear() {
+        let mut canvas = Canvas::new();
+        let cell = Cell { ch: blocks::FULL, fg: RED, bg: None };
+        canvas.set(5, 5, cell);
+        canvas.clear();
+        assert!(canvas.is_empty(), "Canvas after clear should be empty");
     }
 }

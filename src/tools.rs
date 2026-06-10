@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_fill_shade_char() {
-        let mut canvas = Canvas::new();
+        let canvas = Canvas::new();
         // Fill entire empty region with shade char
         let mutations = flood_fill(&canvas, 0, 0, blocks::SHADE_MEDIUM, RED, None);
         assert!(!mutations.is_empty(), "Fill should produce mutations");

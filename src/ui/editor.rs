@@ -4,11 +4,48 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, BorderType, Widget};
 
-use crate::app::App;
-use crate::cell::{blocks, is_half_block, Cell, resolve_half_block};
+use crate::app::{App, ReferenceLayer, dim_color};
+use crate::cell::{blocks, is_half_block, Cell, ResolvedHalfBlock, resolve_half_block};
 use crate::input::CanvasArea;
 use crate::theme::Theme;
 use crate::tools::{self, ToolState};
+
+/// Direction of a symmetry axis at a given cell position.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AxisDirection {
+    Vertical,    // │ — vertical line (horizontal symmetry mirrors left/right)
+    Horizontal,  // ─ — horizontal line (vertical symmetry mirrors top/bottom)
+    Intersection, // ┼ — quad symmetry intersection
+}
+
+/// Return axis glyph, fg, and bg for a cell on a symmetry axis.
+/// - Empty cells: axis glyph with `theme.accent` fg and `theme.panel_bg` bg
+/// - Occupied cells: keep glyph, tint fg to `theme.dim`
+fn render_axis_cell(
+    ch: char,
+    _fg: Color,
+    bg: Color,
+    direction: AxisDirection,
+    theme: &Theme,
+    is_empty: bool,
+) -> (char, Color, Color) {
+    let glyph = match direction {
+        AxisDirection::Vertical => '\u{2502}',     // │
+        AxisDirection::Horizontal => '\u{2500}',   // ─
+        AxisDirection::Intersection => '\u{253C}',  // ┼
+    };
+
+    if is_empty {
+        // Empty cell: show axis glyph with accent color
+        (glyph, theme.accent, theme.panel_bg)
+    } else if ch == ' ' {
+        // Background-only cell: show axis glyph, preserve existing bg
+        (glyph, theme.accent, bg)
+    } else {
+        // Occupied cell: keep glyph, tint fg
+        (ch, theme.dim, bg)
+    }
+}
 
 /// Return the visual background color for an empty/transparent cell position.
 fn grid_bg(x: usize, y: usize, show_grid: bool, theme: &Theme) -> Color {
@@ -23,17 +60,42 @@ fn grid_bg(x: usize, y: usize, show_grid: bool, theme: &Theme) -> Color {
     }
 }
 
+/// Return the visual background for an empty/transparent cell, checking
+/// the reference layer first, then falling back to grid.
+fn grid_or_reference_bg(
+    x: usize, y: usize, show_grid: bool, theme: &Theme,
+    reference: Option<&ReferenceLayer>,
+) -> Color {
+    if let Some(ref_layer) = reference {
+        if ref_layer.visible {
+            if let Some(Some(ref_color)) = ref_layer.colors.get(y).and_then(|row| row.get(x)) {
+                let dimmed = dim_color(ref_color, ref_layer.brightness);
+                return dimmed.to_ratatui();
+            }
+        }
+    }
+    grid_bg(x, y, show_grid, theme)
+}
+
 /// Thin wrapper around `cell::resolve_half_block` that maps transparent halves
 /// to grid background colors for terminal display.
-fn resolve_half_block_for_display(cell: Cell, x: usize, y: usize, show_grid: bool, theme: &Theme) -> (char, Color, Color) {
-    let resolved = resolve_half_block(&cell).unwrap();
+fn resolve_half_block_for_display(
+    cell: Cell, x: usize, y: usize, show_grid: bool, theme: &Theme,
+    reference: Option<&ReferenceLayer>,
+) -> (char, Color, Color) {
+    let resolved = resolve_half_block(&cell).unwrap_or(ResolvedHalfBlock {
+        ch: cell.ch, fg: cell.fg, bg: cell.bg,
+    });
 
     if resolved.ch == ' ' {
-        return (' ', Color::Reset, grid_bg(x, y, show_grid, theme));
+        return (' ', Color::Reset, grid_or_reference_bg(x, y, show_grid, theme, reference));
     }
 
     let fg = resolved.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
-    let bg = resolved.bg.map_or(grid_bg(x, y, show_grid, theme), |rgb| rgb.to_ratatui());
+    let bg = resolved.bg.map_or(
+        grid_or_reference_bg(x, y, show_grid, theme, reference),
+        |rgb| rgb.to_ratatui(),
+    );
     (resolved.ch, fg, bg)
 }
 
@@ -167,6 +229,7 @@ impl<'a> Widget for CanvasWidget<'a> {
         let theme = self.app.theme();
         let vp_x = self.app.viewport_x;
         let vp_y = self.app.viewport_y;
+        let reference = self.app.reference_layer.as_ref();
 
         // Viewport dimensions in canvas cells
         let vp_w = (area.width / zoom as u16) as usize;
@@ -213,30 +276,41 @@ impl<'a> Widget for CanvasWidget<'a> {
                 };
 
                 // Resolve to (char, fg, bg) using unified path
-                let (ch_out, mut fg, mut bg) = if render_cell.ch == blocks::FULL {
+                let (mut ch_out, mut fg, mut bg) = if render_cell.ch == blocks::FULL {
                     let c = render_cell.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
                     ('\u{2588}', c, c)
                 } else if render_cell.is_empty() {
-                    (' ', Color::Reset, grid_bg(x, y, show_grid, theme))
+                    (' ', Color::Reset, grid_or_reference_bg(x, y, show_grid, theme, reference))
                 } else if is_half_block(render_cell.ch) {
-                    resolve_half_block_for_display(render_cell, x, y, show_grid, theme)
+                    resolve_half_block_for_display(render_cell, x, y, show_grid, theme, reference)
                 } else {
                     // Fractional fills, shades, and other single-color blocks
                     let fg_color = render_cell.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
-                    (render_cell.ch, fg_color, grid_bg(x, y, show_grid, theme))
+                    (render_cell.ch, fg_color, grid_or_reference_bg(x, y, show_grid, theme, reference))
                 };
 
-                // Symmetry axis highlight
+                // Symmetry axis visualization
                 let canvas_w = self.app.canvas.width;
                 let canvas_h = self.app.canvas.height;
-                let on_h_axis = self.app.symmetry.has_horizontal()
-                    && (x == canvas_w / 2 - 1 || x == canvas_w / 2);
-                let on_v_axis = self.app.symmetry.has_vertical()
-                    && (y == canvas_h / 2 - 1 || y == canvas_h / 2);
-                if (on_h_axis || on_v_axis) && !is_cursor
-                    && render_cell.is_empty()
-                {
-                    bg = Color::Indexed(238);
+                let mid_x = canvas_w / 2;
+                let mid_y = canvas_h / 2;
+                let on_v_line = self.app.symmetry.has_horizontal()
+                    && (x == mid_x.saturating_sub(1) || x == mid_x);
+                let on_h_line = self.app.symmetry.has_vertical()
+                    && (y == mid_y.saturating_sub(1) || y == mid_y);
+                if (on_v_line || on_h_line) && !is_cursor {
+                    let direction = match (on_v_line, on_h_line) {
+                        (true, true) => AxisDirection::Intersection,
+                        (true, false) => AxisDirection::Vertical,
+                        (false, true) => AxisDirection::Horizontal,
+                        _ => unreachable!(),
+                    };
+                    let result = render_axis_cell(
+                        ch_out, fg, bg, direction, theme, render_cell.is_empty(),
+                    );
+                    ch_out = result.0;
+                    fg = result.1;
+                    bg = result.2;
                 }
 
                 // Cursor inversion
@@ -265,6 +339,20 @@ impl<'a> Widget for CanvasWidget<'a> {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // Startup hint overlay on blank canvas
+        if self.app.show_startup_hint && self.app.canvas.is_empty() {
+            let line1 = "Click anywhere to start drawing";
+            let line2 = "? Help   Ctrl+P Commands";
+            let dim = Style::default().fg(theme.dim);
+            let cy = area.y + area.height * 2 / 5;
+            let cx1 = area.x + area.width.saturating_sub(line1.len() as u16) / 2;
+            let cx2 = area.x + area.width.saturating_sub(line2.len() as u16) / 2;
+            if cy + 1 < area.y + area.height {
+                buf.set_string(cx1, cy, line1, dim);
+                buf.set_string(cx2, cy + 1, line2, dim);
             }
         }
     }
@@ -307,7 +395,7 @@ mod tests {
 
     #[test]
     fn upper_half_one_transparent_bottom() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, WARM.grid_even);
@@ -315,7 +403,7 @@ mod tests {
 
     #[test]
     fn upper_half_both_opaque() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Indexed(4));
@@ -323,7 +411,7 @@ mod tests {
 
     #[test]
     fn upper_half_one_transparent_top_flips() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, Some(BLUE)), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, Some(BLUE)), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▄');
         assert_eq!(fg, Color::Indexed(4));
         assert_eq!(bg, WARM.grid_even);
@@ -331,14 +419,14 @@ mod tests {
 
     #[test]
     fn upper_half_both_transparent() {
-        let (ch, _fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, None), 0, 0, true, &WARM);
+        let (ch, _fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, None), 0, 0, true, &WARM, None);
         assert_eq!(ch, ' ');
         assert_eq!(bg, WARM.grid_even);
     }
 
     #[test]
     fn left_half_one_transparent_right() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), None), 1, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), None), 1, 0, true, &WARM, None);
         assert_eq!(ch, '▌');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, WARM.grid_odd);
@@ -346,7 +434,7 @@ mod tests {
 
     #[test]
     fn left_half_flips_when_left_transparent() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, None, Some(RED)), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, None, Some(RED)), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▐');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, WARM.grid_even);
@@ -354,7 +442,7 @@ mod tests {
 
     #[test]
     fn lower_half_defensive() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LOWER_HALF, Some(BLUE), None), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LOWER_HALF, Some(BLUE), None), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▄');
         assert_eq!(fg, Color::Indexed(4));
         assert_eq!(bg, WARM.grid_even);
@@ -362,7 +450,7 @@ mod tests {
 
     #[test]
     fn right_half_defensive() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::RIGHT_HALF, Some(RED), None), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::RIGHT_HALF, Some(RED), None), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▐');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, WARM.grid_even);
@@ -370,7 +458,7 @@ mod tests {
 
     #[test]
     fn resolve_grid_off_uses_reset() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, false, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, false, &WARM, None);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Reset);
@@ -378,9 +466,117 @@ mod tests {
 
     #[test]
     fn left_half_both_opaque() {
-        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM, None);
         assert_eq!(ch, '▌');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Indexed(4));
+    }
+
+    // --- render_axis_cell tests ---
+
+    #[test]
+    fn test_axis_empty_cell() {
+        // Empty cell on vertical axis → │ glyph with accent fg, panel_bg bg
+        let (ch, fg, bg) = render_axis_cell(' ', Color::Reset, Color::Reset, AxisDirection::Vertical, &WARM, true);
+        assert_eq!(ch, '│');
+        assert_eq!(fg, WARM.accent);
+        assert_eq!(bg, WARM.panel_bg);
+    }
+
+    #[test]
+    fn test_axis_occupied_cell() {
+        // Occupied cell (has visible glyph) → keep glyph, tint fg to dim
+        let (ch, fg, bg) = render_axis_cell('█', Color::Indexed(1), Color::Indexed(4), AxisDirection::Vertical, &WARM, false);
+        assert_eq!(ch, '█', "Should preserve original glyph");
+        assert_eq!(fg, WARM.dim, "Should tint fg to dim");
+        assert_eq!(bg, Color::Indexed(4), "Should preserve bg");
+    }
+
+    #[test]
+    fn test_axis_bg_only_cell() {
+        // Space char with bg color → show axis glyph, preserve bg
+        let (ch, fg, bg) = render_axis_cell(' ', Color::Reset, Color::Indexed(4), AxisDirection::Horizontal, &WARM, false);
+        assert_eq!(ch, '─', "Should show horizontal axis glyph");
+        assert_eq!(fg, WARM.accent, "Should use accent fg");
+        assert_eq!(bg, Color::Indexed(4), "Should preserve existing bg");
+    }
+
+    #[test]
+    fn test_axis_quad_intersection() {
+        // Intersection of both axes → ┼ character
+        let (ch, fg, bg) = render_axis_cell(' ', Color::Reset, Color::Reset, AxisDirection::Intersection, &WARM, true);
+        assert_eq!(ch, '┼');
+        assert_eq!(fg, WARM.accent);
+        assert_eq!(bg, WARM.panel_bg);
+    }
+
+    // --- Cycle 018: Reference layer rendering tests ---
+
+    #[test]
+    fn grid_or_reference_bg_without_reference() {
+        // Without reference layer, should fall back to grid_bg
+        let bg = grid_or_reference_bg(0, 0, true, &WARM, None);
+        assert_eq!(bg, WARM.grid_even);
+    }
+
+    #[test]
+    fn grid_or_reference_bg_with_visible_reference() {
+        let ref_color = Rgb::new(200, 100, 80);
+        let ref_layer = ReferenceLayer {
+            colors: vec![vec![Some(ref_color)]],
+            image_path: "test.png".to_string(),
+            brightness: 0,
+            visible: true,
+        };
+        let bg = grid_or_reference_bg(0, 0, true, &WARM, Some(&ref_layer));
+        // Should be dimmed reference color (25% at brightness 0)
+        let expected = dim_color(&ref_color, 0).to_ratatui();
+        assert_eq!(bg, expected);
+    }
+
+    #[test]
+    fn grid_or_reference_bg_with_hidden_reference() {
+        let ref_layer = ReferenceLayer {
+            colors: vec![vec![Some(Rgb::new(200, 100, 80))]],
+            image_path: "test.png".to_string(),
+            brightness: 0,
+            visible: false,
+        };
+        // Hidden reference should fall back to grid
+        let bg = grid_or_reference_bg(0, 0, true, &WARM, Some(&ref_layer));
+        assert_eq!(bg, WARM.grid_even);
+    }
+
+    #[test]
+    fn grid_or_reference_bg_transparent_pixel() {
+        let ref_layer = ReferenceLayer {
+            colors: vec![vec![None]],
+            image_path: "test.png".to_string(),
+            brightness: 0,
+            visible: true,
+        };
+        // Transparent pixel should fall back to grid
+        let bg = grid_or_reference_bg(0, 0, true, &WARM, Some(&ref_layer));
+        assert_eq!(bg, WARM.grid_even);
+    }
+
+    #[test]
+    fn half_block_with_reference_transparent_bg() {
+        // Half block with transparent bg should show reference color
+        let ref_color = Rgb::new(200, 100, 80);
+        let ref_layer = ReferenceLayer {
+            colors: vec![vec![Some(ref_color)]],
+            image_path: "test.png".to_string(),
+            brightness: 1,
+            visible: true,
+        };
+        let (ch, fg, bg) = resolve_half_block_for_display(
+            make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, true, &WARM, Some(&ref_layer),
+        );
+        assert_eq!(ch, '▀');
+        assert_eq!(fg, Color::Indexed(1));
+        // bg should be dimmed reference color at brightness 1 (50%)
+        let expected = dim_color(&ref_color, 1).to_ratatui();
+        assert_eq!(bg, expected);
     }
 }
