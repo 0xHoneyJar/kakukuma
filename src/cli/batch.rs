@@ -48,6 +48,32 @@ pub enum BatchOp {
         width: usize,
         height: usize,
     },
+    /// Ellipse inscribed in the bounding box (x1,y1)-(x2,y2).
+    #[serde(alias = "ellipse")]
+    Ellipse {
+        x1: usize,
+        y1: usize,
+        x2: usize,
+        y2: usize,
+        ch: Option<String>,
+        fg: Option<String>,
+        bg: Option<String>,
+        filled: Option<bool>,
+    },
+    /// Linear gradient fill of region (x1,y1)-(x2,y2) from `start` to `end`.
+    /// `direction`: "vertical" (default) or "horizontal".
+    /// `dither`: shade-character dithering instead of smooth RGB.
+    #[serde(alias = "gradient")]
+    Gradient {
+        x1: usize,
+        y1: usize,
+        x2: usize,
+        y2: usize,
+        start: String,
+        end: String,
+        direction: Option<String>,
+        dither: Option<bool>,
+    },
 }
 
 // --- Helpers ---
@@ -173,6 +199,46 @@ fn execute_op(canvas: &mut Canvas, op: &BatchOp) -> Result<usize, String> {
             canvas.resize(w, h);
             Ok(0)
         }
+        BatchOp::Ellipse { x1, y1, x2, y2, ch, fg, bg, filled } => {
+            let character = parse_char(ch)?;
+            let fg_rgb = parse_optional_color(fg)?;
+            let bg_rgb = parse_optional_color(bg)?;
+            let mutations = tools::ellipse(
+                canvas, *x1, *y1, *x2, *y2,
+                character, fg_rgb, bg_rgb,
+                filled.unwrap_or(false),
+            );
+            let count = mutations.len();
+            for m in &mutations {
+                canvas.set(m.x, m.y, m.new);
+            }
+            Ok(count)
+        }
+        BatchOp::Gradient { x1, y1, x2, y2, start, end, direction, dither } => {
+            let start_rgb = parse_hex_color(start)
+                .ok_or_else(|| format!("Invalid color: '{}'", start))?;
+            let end_rgb = parse_hex_color(end)
+                .ok_or_else(|| format!("Invalid color: '{}'", end))?;
+            let horizontal = match direction.as_deref() {
+                None | Some("vertical") | Some("v") => false,
+                Some("horizontal") | Some("h") => true,
+                Some(other) => {
+                    return Err(format!(
+                        "Invalid direction '{}'. Use 'horizontal' or 'vertical'.", other
+                    ))
+                }
+            };
+            let mutations = tools::gradient_fill(
+                canvas, *x1, *y1, *x2, *y2,
+                start_rgb, end_rgb,
+                horizontal, dither.unwrap_or(false),
+            );
+            let count = mutations.len();
+            for m in &mutations {
+                canvas.set(m.x, m.y, m.new);
+            }
+            Ok(count)
+        }
     }
 }
 
@@ -238,6 +304,7 @@ pub fn run_batch(file: &str, commands_path: &str, dry_run: bool) -> io::Result<(
         "cells_modified": cells_modified,
         "errors": errors,
         "file": file,
+        "hash": project.canvas.content_hash(),
     });
 
     if !error_details.is_empty() {

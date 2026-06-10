@@ -70,6 +70,47 @@ impl Canvas {
         self.height = height;
     }
 
+    /// Stable content hash of dimensions and all cells (FNV-1a, 64-bit).
+    ///
+    /// Deterministic across runs and platforms, so agents can verify
+    /// canvas state hash-in/hash-out without re-reading cell data.
+    pub fn content_hash(&self) -> String {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+
+        let mut hash = FNV_OFFSET;
+        let mut feed = |byte: u8| {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        };
+
+        for b in (self.width as u32).to_le_bytes() {
+            feed(b);
+        }
+        for b in (self.height as u32).to_le_bytes() {
+            feed(b);
+        }
+        for row in &self.cells {
+            for cell in row {
+                for b in (cell.ch as u32).to_le_bytes() {
+                    feed(b);
+                }
+                for color in [cell.fg, cell.bg] {
+                    match color {
+                        Some(c) => {
+                            feed(1);
+                            feed(c.r);
+                            feed(c.g);
+                            feed(c.b);
+                        }
+                        None => feed(0),
+                    }
+                }
+            }
+        }
+        format!("{:016x}", hash)
+    }
+
     /// Resize the canvas, preserving existing content where it overlaps.
     pub fn resize(&mut self, new_width: usize, new_height: usize) {
         let w = new_width.clamp(MIN_DIMENSION, MAX_DIMENSION);
@@ -224,6 +265,33 @@ mod tests {
         let cell = Cell { ch: blocks::FULL, fg: RED, bg: None };
         canvas.set(0, 0, cell);
         assert!(!canvas.is_empty(), "Canvas with one cell set should not be empty");
+    }
+
+    #[test]
+    fn test_content_hash_deterministic() {
+        let a = Canvas::new_with_size(16, 16);
+        let b = Canvas::new_with_size(16, 16);
+        assert_eq!(a.content_hash(), b.content_hash());
+        assert_eq!(a.content_hash().len(), 16);
+    }
+
+    #[test]
+    fn test_content_hash_changes_on_edit() {
+        let mut canvas = Canvas::new_with_size(16, 16);
+        let before = canvas.content_hash();
+        canvas.set(3, 3, Cell { ch: blocks::FULL, fg: RED, bg: None });
+        let after = canvas.content_hash();
+        assert_ne!(before, after);
+        // Reverting the edit restores the hash
+        canvas.set(3, 3, Cell::default());
+        assert_eq!(canvas.content_hash(), before);
+    }
+
+    #[test]
+    fn test_content_hash_dimension_sensitive() {
+        let a = Canvas::new_with_size(16, 32);
+        let b = Canvas::new_with_size(32, 16);
+        assert_ne!(a.content_hash(), b.content_hash());
     }
 
     #[test]

@@ -22,6 +22,7 @@ Terminal-native ANSI art editor using Unicode half-block characters for 2x verti
 - **Image import & render** — load PNG/JPEG onto canvas, or render directly to ANSI art with terminal-aware color
 - **WASD navigation** — keyboard-driven canvas cursor with viewport scrolling
 - **CLI toolchain** — scriptable commands for batch operations, export, import, preview, and more
+- **Agent-native** — `snapshot`/`describe` perception loop, content hashes, high-level batch ops; see [AGENTS.md](AGENTS.md)
 - **Library crate** — `use kakukuma::{Canvas, Cell, Rgb, ...}` for external consumers
 
 ## Installation
@@ -142,6 +143,8 @@ kakukuma batch operations.json myart.kaku
 | `import` | Import image file onto canvas |
 | `render` | Convert image to ANSI art on stdout (no intermediate file) |
 | `inspect` | Query cell data at coordinates |
+| `describe` | Compact semantic canvas view: legend + symbol grid + content hash |
+| `snapshot` | One-call perception: write PNG render and print describe output |
 | `resize` | Resize canvas dimensions |
 | `clear` | Reset all cells to default |
 | `batch` | Execute batch operations from JSON |
