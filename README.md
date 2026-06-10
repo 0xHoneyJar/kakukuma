@@ -80,6 +80,7 @@ kakukuma batch operations.json myart.kaku
 | `F` | Fill |
 | `I` | Eyedropper |
 | `T` | Toggle rectangle filled/outline |
+| `Esc` | Cancel in-progress line/rectangle |
 
 ### Drawing
 
@@ -101,6 +102,8 @@ kakukuma batch operations.json myart.kaku
 | `C` | Palette manager |
 | `A` | Add current color to palette |
 | `Right-click` | Quick eyedropper |
+
+`S` and `A` move the canvas cursor instead while keyboard drawing is active (see below).
 
 ### Canvas
 
@@ -195,7 +198,7 @@ Import and render apply **brightness normalization** and **hue-preserving quanti
 |-----------|-------------|
 | `.kaku` | Project file — preserves all canvas state (JSON, v1-v5 compatible) |
 | `.palette` | Custom color palette (JSON, shareable) |
-| `.ans` | ANSI art export (256-color or 16-color escape codes) |
+| `.ans` | ANSI art export (truecolor, 256-color, or 16-color escape codes) |
 | `.txt` | Plain Unicode export (blocks without color) |
 | `.png` | PNG image export (configurable cell size and scale) |
 | `.json` | Structured JSON export (cell-level data) |
@@ -242,7 +245,7 @@ Built with [ratatui](https://github.com/ratatui/ratatui) and [crossterm](https:/
 
 ## License
 
-[MIT](LICENSE.md)
+[MIT](LICENSE)
 
 ---
 
