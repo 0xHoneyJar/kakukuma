@@ -7,17 +7,18 @@ Terminal-native ANSI art editor using Unicode half-block characters.
 
 ## Features
 
-- **Dynamic canvas** — resizable from 8x8 to 128x128 with half-block rendering
+- **Dynamic canvas** — resizable from 8x8 to 128x128 (default 48x32) with half-block rendering
 - **6 drawing tools**: Pencil, Eraser, Line, Rectangle, Fill, Eyedropper
-- **256-color support** with curated 24-color palette and full xterm-256 browser
+- **Full RGB color** with curated 24-color palette, xterm-256 browser, HSL sliders, and hex input
+- **20 block characters** — solid/half blocks, shades (`░▒▓`), and fractional fills
 - **3 built-in themes** — Warm, Neon, Dark — cycle with `Ctrl+T`
-- **HSL color sliders** for precise color picking
 - **Custom palettes** — create, save, load, and share `.palette` files
 - **Symmetry modes** — horizontal, vertical, or both for mirrored drawing
 - **Undo/redo** with full stroke-level history
 - **Project files** — save/load `.kaku` files with auto-save recovery
-- **Export** — ANSI art to clipboard or file, with optional plain Unicode export
+- **Export** — ANSI art to clipboard or file (truecolor, 256, or 16-color), with optional plain Unicode export
 - **Mouse support** — click and drag to draw, right-click to eyedrop
+- **Keyboard drawing** — `WASD` cursor navigation with `Space` to draw, no mouse required
 
 ## Installation
 
@@ -54,18 +55,25 @@ cargo run -- myart.kaku
 | `F` | Fill — flood fill from click point |
 | `I` | Eyedropper — pick color from canvas |
 | `B` | Cycle block character (full, upper half, lower half, left half, right half) |
+| `Shift+B` | Open block picker (all 20 blocks: primary, shades, fractional fills) |
+| `G` | Cycle shade block (`░` → `▒` → `▓`) |
 | `T` | Toggle rectangle filled/outline |
+| `Esc` | Cancel in-progress line/rectangle |
 
 ### Colors
 
 | Key | Action |
 |-----|--------|
 | `1`-`0` | Quick select from curated palette |
-| `Arrow keys` | Browse full 256-color palette |
+| `Arrow keys` | Browse the palette panel (curated, hue groups, grayscale) |
+| `Enter` | Select highlighted color, or expand/collapse a palette section |
 | `S` | Open HSL color sliders |
+| `X` | Enter a hex color (e.g. `#ff8800`) |
 | `C` | Open custom palette dialog |
 | `A` | Add current color to active palette |
 | `Right-click` | Quick eyedropper |
+
+`S` and `A` move the canvas cursor instead while keyboard drawing is active (see below).
 
 ### Canvas
 
@@ -75,6 +83,9 @@ cargo run -- myart.kaku
 | `V` | Toggle vertical symmetry |
 | `Z` | Cycle zoom (1x / 2x / 4x) |
 | `Ctrl+T` | Cycle theme (Warm / Neon / Dark) |
+| `W`/`A`/`S`/`D` | Move canvas cursor (activates keyboard drawing) |
+| `Space` | Apply current tool at canvas cursor |
+| `Esc` | Deactivate canvas cursor |
 
 ### File Operations
 
@@ -86,7 +97,7 @@ cargo run -- myart.kaku
 | `Ctrl+E` | Export dialog |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` | Redo |
-| `Q` | Quit |
+| `Q` / `Ctrl+C` | Quit (prompts if there are unsaved changes) |
 | `?` | Help |
 
 ## File Formats
@@ -96,7 +107,7 @@ cargo run -- myart.kaku
 | `.kaku` | Project file (JSON, preserves all state) |
 | `.palette` | Custom color palette (JSON, shareable) |
 | `.txt` | Plain Unicode export (blocks without color) |
-| `.ans` | ANSI art export (256-color escape codes) |
+| `.ans` | ANSI art export (truecolor, 256-color, or 16-color escape codes) |
 
 ## Architecture
 
@@ -105,7 +116,7 @@ src/
 ├── main.rs        Entry point, terminal setup
 ├── app.rs         Application state and logic
 ├── canvas.rs      Dynamic-size cell grid (8-128)
-├── cell.rs        Color256 type, BlockChar, Cell
+├── cell.rs        Rgb color type, block characters, Cell
 ├── theme.rs       3 built-in color themes
 ├── tools.rs       Drawing tool implementations
 ├── input.rs       Keyboard and mouse handlers
@@ -126,7 +137,7 @@ Built with [ratatui](https://github.com/ratatui/ratatui) and [crossterm](https:/
 
 ## License
 
-[MIT](LICENSE.md)
+[MIT](LICENSE)
 
 ---
 
